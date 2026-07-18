@@ -378,8 +378,11 @@ private struct TimerMachineCard: View {
         }
         .padding(18)
         .foregroundStyle(PomodoroughTheme.porcelain)
-        .background(PomodoroughTheme.platform, in: .rect(cornerRadius: 24))
-        .shadow(color: PomodoroughTheme.signal.opacity(0.9), radius: 0, x: 7, y: 7)
+        .background {
+            RoundedRectangle(cornerRadius: 24)
+                .fill(PomodoroughTheme.platform)
+                .shadow(color: PomodoroughTheme.signal.opacity(0.9), radius: 0, x: 7, y: 7)
+        }
     }
 }
 
