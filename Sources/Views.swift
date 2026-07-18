@@ -126,6 +126,9 @@ private struct ModernTabs: View {
             Tab("Timer", systemImage: "timer") {
                 NavigationStack { TimerScreen(model: model) }
             }
+            Tab("Pattern", systemImage: "slider.horizontal.3") {
+                NavigationStack { ServicePatternScreen(model: model) }
+            }
             Tab("Arrivals", systemImage: "clock.arrow.trianglehead.counterclockwise.rotate.90") {
                 NavigationStack { HistoryScreen(model: model) }
             }
@@ -140,6 +143,8 @@ private struct LegacyTabs: View {
         TabView {
             NavigationStack { TimerScreen(model: model) }
                 .tabItem { Label("Timer", systemImage: "timer") }
+            NavigationStack { ServicePatternScreen(model: model) }
+                .tabItem { Label("Pattern", systemImage: "slider.horizontal.3") }
             NavigationStack { HistoryScreen(model: model) }
                 .tabItem { Label("Arrivals", systemImage: "clock.arrow.circlepath") }
         }
@@ -154,11 +159,9 @@ private struct TimerScreen: View {
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 20) {
-                TransitHeader(model: model)
                 if let conflict = model.conflictMessage {
                     ConflictBanner(message: conflict, dismiss: model.dismissConflict)
                 }
-                ServicePatternCard(model: model)
                 TimerMachineCard(model: model)
             }
             .padding()
@@ -170,6 +173,9 @@ private struct TimerScreen: View {
         .inlineNavigationTitleIfSupported()
         .refreshable { await model.sync(force: true) }
         .toolbar {
+            ToolbarItem(placement: .navigation) {
+                SyncToolbarStatus(model: model)
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button("Account", systemImage: "person.crop.circle") { showsAccount = true }
             }
@@ -178,54 +184,44 @@ private struct TimerScreen: View {
     }
 }
 
-private struct TransitHeader: View {
+private struct SyncToolbarStatus: View {
     let model: AppModel
 
     var body: some View {
-        HStack(spacing: 12) {
-            RouteClockMark(compact: true)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("TIME, IN TRANSIT")
+        Button {
+            Task { await model.sync(force: true) }
+        } label: {
+            HStack(spacing: 6) {
+                if model.isSyncing {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: model.conflictMessage == nil ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                        .foregroundStyle(model.conflictMessage == nil ? PomodoroughTheme.platform : PomodoroughTheme.signal)
+                        .accessibilityHidden(true)
+                }
+                Text(model.syncLabel.uppercased())
                     .font(.caption2.monospaced().bold())
-                    .tracking(2)
-                    .foregroundStyle(PomodoroughTheme.ticket)
-                Text("Current service")
-                    .font(.headline)
-                    .foregroundStyle(PomodoroughTheme.porcelain)
+                    .lineLimit(1)
             }
-            Spacer(minLength: 8)
-            SyncStatusPill(label: model.syncLabel, working: model.isSyncing, warning: model.conflictMessage != nil)
         }
-        .padding(14)
-        .background(PomodoroughTheme.platform, in: .rect(cornerRadius: 20))
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Current service status")
+        .accessibilityLabel("Sync status, \(model.syncLabel)")
+        .accessibilityHint("Sync now")
     }
 }
 
-private struct SyncStatusPill: View {
-    let label: String
-    let working: Bool
-    let warning: Bool
+private struct ServicePatternScreen: View {
+    @Bindable var model: AppModel
 
     var body: some View {
-        HStack(spacing: 7) {
-            if working {
-                ProgressView().controlSize(.small).tint(PomodoroughTheme.ticket)
-            } else {
-                Image(systemName: warning ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                    .foregroundStyle(warning ? PomodoroughTheme.signal : PomodoroughTheme.mint)
-                    .accessibilityHidden(true)
-            }
-            Text(label.uppercased())
-                .font(.caption2.monospaced().bold())
-                .lineLimit(1)
+        ScrollView {
+            ServicePatternCard(model: model)
+                .padding()
+                .frame(maxWidth: 760)
+                .frame(maxWidth: .infinity)
         }
-        .foregroundStyle(PomodoroughTheme.porcelain)
-        .padding(.horizontal, 10)
-        .frame(minHeight: 44)
-        .background(.white.opacity(0.1), in: .capsule)
-        .accessibilityLabel("Sync status, \(label)")
+        .background(PomodoroughTheme.sky.gradient)
+        .navigationTitle("Service pattern")
+        .inlineNavigationTitleIfSupported()
     }
 }
 
