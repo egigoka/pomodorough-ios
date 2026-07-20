@@ -157,18 +157,37 @@ private struct TimerScreen: View {
     @State private var showsAccount = false
 
     var body: some View {
-        ScrollView {
-            LazyVStack(spacing: 20) {
-                if let conflict = model.conflictMessage {
-                    ConflictBanner(message: conflict, dismiss: model.dismissConflict)
+        GeometryReader { geometry in
+            let layout = TimerLayout(size: geometry.size)
+
+            Group {
+                if layout == .landscape {
+                    VStack(spacing: 10) {
+                        if let conflict = model.conflictMessage {
+                            ConflictBanner(message: conflict, dismiss: model.dismissConflict)
+                        }
+                        TimerMachineCard(model: model, layout: layout)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .timerChromeHidden(true)
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 20) {
+                            if let conflict = model.conflictMessage {
+                                ConflictBanner(message: conflict, dismiss: model.dismissConflict)
+                            }
+                            TimerMachineCard(model: model, layout: layout)
+                        }
+                        .padding()
+                        .frame(maxWidth: 760)
+                        .frame(maxWidth: .infinity)
+                    }
+                    .timerChromeHidden(false)
                 }
-                TimerMachineCard(model: model)
             }
-            .padding()
-            .frame(maxWidth: 760)
-            .frame(maxWidth: .infinity)
         }
-        .background(PomodoroughTheme.sky.gradient)
+        .background(TimerBackdrop())
         .navigationTitle("Pomodorough")
         .inlineNavigationTitleIfSupported()
         .refreshable { await model.sync(force: true) }
@@ -181,6 +200,19 @@ private struct TimerScreen: View {
             }
         }
         .sheet(isPresented: $showsAccount) { AccountView(model: model) }
+    }
+}
+
+private enum TimerLayout {
+    case portrait
+    case landscape
+
+    init(size: CGSize) {
+#if os(iOS)
+        self = size.width > size.height ? .landscape : .portrait
+#else
+        self = .portrait
+#endif
     }
 }
 
@@ -351,9 +383,10 @@ private struct StepButton: View {
 
 private struct TimerMachineCard: View {
     let model: AppModel
+    let layout: TimerLayout
 
     var body: some View {
-        VStack(spacing: 18) {
+        VStack(spacing: layout == .landscape ? 10 : 18) {
             HStack {
                 Text("CURRENT SERVICE")
                 Spacer()
@@ -366,18 +399,27 @@ private struct TimerMachineCard: View {
             .overlay(alignment: .bottom) { Divider().overlay(.white.opacity(0.35)) }
 
             if let timer = model.canonicalTimer {
-                TimerDial(timer: timer, model: model)
+                TimerDial(timer: timer, model: model, layout: layout)
             } else {
-                IdleTimerDial(phase: model.selectedPhase, minutes: model.durationMinutes(for: model.selectedPhase))
+                IdleTimerDial(
+                    phase: model.selectedPhase,
+                    minutes: model.durationMinutes(for: model.selectedPhase),
+                    layout: layout
+                )
             }
-            TimerControls(model: model)
+            TimerControls(model: model, layout: layout)
         }
-        .padding(18)
+        .padding(layout == .landscape ? 14 : 18)
+        .frame(maxWidth: .infinity, maxHeight: layout == .landscape ? .infinity : nil)
         .foregroundStyle(PomodoroughTheme.porcelain)
         .background {
             RoundedRectangle(cornerRadius: 24)
-                .fill(PomodoroughTheme.platform)
+                .fill(PomodoroughTheme.platform.opacity(0.9))
                 .shadow(color: PomodoroughTheme.signal.opacity(0.9), radius: 0, x: 7, y: 7)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 24)
+                .stroke(.white.opacity(0.18), lineWidth: 1)
         }
     }
 }
@@ -385,15 +427,23 @@ private struct TimerMachineCard: View {
 private struct IdleTimerDial: View {
     let phase: TimerPhase
     let minutes: Int
+    let layout: TimerLayout
 
     var body: some View {
-        DialFace(progress: 0, phase: phase, status: "Idle", timeText: String(format: "%02d:00", minutes))
+        DialFace(
+            progress: 0,
+            phase: phase,
+            status: "Idle",
+            timeText: String(format: "%02d:00", minutes),
+            layout: layout
+        )
     }
 }
 
 private struct TimerDial: View {
     let timer: CanonicalTimer
     let model: AppModel
+    let layout: TimerLayout
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 0.25)) { context in
@@ -404,7 +454,8 @@ private struct TimerDial: View {
                 progress: progress,
                 phase: timer.phase,
                 status: timer.status.rawValue.capitalized,
-                timeText: Self.timeText(remaining)
+                timeText: Self.timeText(remaining),
+                layout: layout
             )
             .onChange(of: remaining <= 0, initial: true) {
                 if remaining <= 0 { model.completeIfNeeded(timerID: timer.id, at: context.date) }
@@ -419,6 +470,23 @@ private struct TimerDial: View {
 }
 
 private struct DialFace: View {
+    let progress: Double
+    let phase: TimerPhase
+    let status: String
+    let timeText: String
+    let layout: TimerLayout
+
+    @ViewBuilder
+    var body: some View {
+        if layout == .landscape {
+            LandscapeDialFace(progress: progress, phase: phase, status: status, timeText: timeText)
+        } else {
+            PortraitDialFace(progress: progress, phase: phase, status: status, timeText: timeText)
+        }
+    }
+}
+
+private struct PortraitDialFace: View {
     let progress: Double
     let phase: TimerPhase
     let status: String
@@ -442,9 +510,10 @@ private struct DialFace: View {
                     .font(.caption.monospaced().bold())
                     .foregroundStyle(PomodoroughTheme.signal)
                 Text(timeText)
-                    .font(.system(.largeTitle, design: .rounded, weight: .black))
+                    .font(.system(size: 64, weight: .black, design: .rounded))
                     .monospacedDigit()
-                    .minimumScaleFactor(0.6)
+                    .minimumScaleFactor(0.48)
+                    .lineLimit(1)
                     .foregroundStyle(PomodoroughTheme.ticket)
                 Text(status.uppercased())
                     .font(.caption2.monospaced().bold())
@@ -452,12 +521,58 @@ private struct DialFace: View {
             }
             .padding()
             .frame(maxWidth: .infinity)
-            .background(PomodoroughTheme.track, in: .rect(cornerRadius: 14))
-            .overlay { RoundedRectangle(cornerRadius: 14).stroke(PomodoroughTheme.porcelain, lineWidth: 2) }
-            .padding(52)
+            .digitalReadoutPanel(cornerRadius: 18)
+            .overlay { RoundedRectangle(cornerRadius: 18).stroke(PomodoroughTheme.porcelain.opacity(0.8), lineWidth: 2) }
+            .padding(42)
         }
         .aspectRatio(1, contentMode: .fit)
-        .frame(maxWidth: 440)
+        .frame(maxWidth: 500)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(phase.title) timer")
+        .accessibilityValue("\(timeText) remaining, \(status)")
+    }
+}
+
+private struct LandscapeDialFace: View {
+    let progress: Double
+    let phase: TimerPhase
+    let status: String
+    let timeText: String
+
+    var body: some View {
+        VStack(spacing: 2) {
+            HStack {
+                Text(phase.routeLabel.uppercased())
+                Text(phase.title.uppercased())
+                    .foregroundStyle(PomodoroughTheme.signal)
+                Spacer()
+                Text(status.uppercased())
+                    .foregroundStyle(PomodoroughTheme.sky)
+            }
+            .font(.caption.monospaced().bold())
+            .tracking(1.5)
+
+            Text(timeText)
+                .font(.system(size: 156, weight: .black, design: .rounded))
+                .monospacedDigit()
+                .minimumScaleFactor(0.45)
+                .lineLimit(1)
+                .foregroundStyle(PomodoroughTheme.ticket)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            ProgressView(value: max(0, min(1, progress)))
+                .progressViewStyle(.linear)
+                .tint(PomodoroughTheme.signal)
+                .background(PomodoroughTheme.porcelain.opacity(0.18), in: .capsule)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .digitalReadoutPanel(cornerRadius: 24)
+        .overlay {
+            RoundedRectangle(cornerRadius: 24)
+                .stroke(PomodoroughTheme.porcelain.opacity(0.55), lineWidth: 1.5)
+        }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(phase.title) timer")
         .accessibilityValue("\(timeText) remaining, \(status)")
@@ -481,10 +596,11 @@ private struct TickMarks: Shape {
 
 private struct TimerControls: View {
     let model: AppModel
+    let layout: TimerLayout
 
     var body: some View {
         if #available(iOS 26, macOS 26, *) {
-            GlassEffectContainer(spacing: 12) {
+            GlassEffectContainer(spacing: 14) {
                 controls(glass: true)
             }
         } else {
@@ -494,27 +610,52 @@ private struct TimerControls: View {
 
     @ViewBuilder
     private func controls(glass: Bool) -> some View {
-        VStack(spacing: 12) {
-            HStack(spacing: 12) {
-                if model.canonicalTimer?.status == .running {
-                    controlButton("Pause", symbol: "pause.fill", prominent: true, glass: glass) { model.pause() }
-                } else if model.canonicalTimer?.status == .paused {
-                    controlButton("Resume", symbol: "play.fill", prominent: true, glass: glass) { model.resume() }
-                } else {
-                    controlButton("Start \(model.selectedPhase.title)", symbol: "play.fill", prominent: true, glass: glass, action: model.start)
-                }
+        if layout == .landscape {
+            HStack(spacing: 14) {
+                primaryButton(glass: glass)
                 if model.isTimerActive {
                     controlButton("Finish", symbol: "checkmark", prominent: false, glass: glass) { model.finish() }
                     controlButton("Cancel", symbol: "xmark", prominent: false, glass: glass) { model.cancel() }
+                } else if hasClearableTimer {
+                    controlButton("Clear", symbol: "trash", prominent: false, glass: glass, action: model.clear)
                 }
             }
-            if let timer = model.canonicalTimer, timer.status != .running, timer.status != .paused {
-                Button("Clear timer", systemImage: "trash", action: model.clear)
-                    .buttonStyle(.plain)
-                    .frame(minHeight: 44)
-                    .foregroundStyle(PomodoroughTheme.sky)
+        } else {
+            VStack(spacing: 14) {
+                HStack(spacing: 14) {
+                    primaryButton(glass: glass)
+                    if model.isTimerActive {
+                        controlButton("Finish", symbol: "checkmark", prominent: false, glass: glass) { model.finish() }
+                        controlButton("Cancel", symbol: "xmark", prominent: false, glass: glass) { model.cancel() }
+                    }
+                }
+                if hasClearableTimer {
+                    controlButton("Clear timer", symbol: "trash", prominent: false, glass: glass, action: model.clear)
+                }
             }
         }
+    }
+
+    @ViewBuilder
+    private func primaryButton(glass: Bool) -> some View {
+        if model.canonicalTimer?.status == .running {
+            controlButton("Pause", symbol: "pause.fill", prominent: true, glass: glass) { model.pause() }
+        } else if model.canonicalTimer?.status == .paused {
+            controlButton("Resume", symbol: "play.fill", prominent: true, glass: glass) { model.resume() }
+        } else {
+            controlButton(
+                "Start \(model.selectedPhase.title)",
+                symbol: "play.fill",
+                prominent: true,
+                glass: glass,
+                action: model.start
+            )
+        }
+    }
+
+    private var hasClearableTimer: Bool {
+        guard let timer = model.canonicalTimer else { return false }
+        return timer.status != .running && timer.status != .paused
     }
 
     @ViewBuilder
@@ -526,19 +667,53 @@ private struct TimerControls: View {
         action: @escaping () -> Void
     ) -> some View {
         let button = Button(title, systemImage: symbol, action: action)
-            .frame(maxWidth: .infinity, minHeight: 50)
+            .font(.headline)
+            .frame(maxWidth: .infinity, minHeight: layout == .landscape ? 54 : 58)
+            .buttonBorderShape(.capsule)
         if #available(iOS 26, macOS 26, *), glass {
             if prominent {
-                button.buttonStyle(.glassProminent)
+                button
+                    .buttonStyle(.glassProminent)
+                    .tint(PomodoroughTheme.signal)
+                    .controlSize(.extraLarge)
             } else {
-                button.buttonStyle(.glass)
+                button
+                    .buttonStyle(.glass)
+                    .tint(PomodoroughTheme.porcelain.opacity(0.16))
+                    .controlSize(.extraLarge)
             }
         } else {
             button
                 .buttonStyle(.borderedProminent)
                 .tint(prominent ? PomodoroughTheme.ticket : PomodoroughTheme.sky)
                 .foregroundStyle(PomodoroughTheme.track)
+                .controlSize(.large)
         }
+    }
+}
+
+private struct TimerBackdrop: View {
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: [PomodoroughTheme.sky, PomodoroughTheme.mint.opacity(0.82), PomodoroughTheme.sky],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            Circle()
+                .fill(PomodoroughTheme.ticket.opacity(0.3))
+                .frame(width: 280, height: 280)
+                .blur(radius: 18)
+                .offset(x: -150, y: -220)
+            RoundedRectangle(cornerRadius: 80)
+                .fill(PomodoroughTheme.signal.opacity(0.2))
+                .frame(width: 360, height: 150)
+                .rotationEffect(.degrees(-14))
+                .blur(radius: 20)
+                .offset(x: 170, y: 260)
+        }
+        .ignoresSafeArea()
+        .accessibilityHidden(true)
     }
 }
 
@@ -744,6 +919,16 @@ private enum PomodoroughTheme {
 
 private extension View {
     @ViewBuilder
+    func timerChromeHidden(_ hidden: Bool) -> some View {
+#if os(iOS)
+        toolbar(hidden ? .hidden : .visible, for: .navigationBar)
+            .toolbar(hidden ? .hidden : .visible, for: .tabBar)
+#else
+        self
+#endif
+    }
+
+    @ViewBuilder
     func inlineNavigationTitleIfSupported() -> some View {
 #if os(iOS)
         navigationBarTitleDisplayMode(.inline)
@@ -758,6 +943,18 @@ private extension View {
             glassEffect(.regular.tint(PomodoroughTheme.platform.opacity(0.58)), in: .rect(cornerRadius: 28))
         } else {
             background(PomodoroughTheme.platform.opacity(0.88), in: .rect(cornerRadius: 28))
+        }
+    }
+
+    @ViewBuilder
+    func digitalReadoutPanel(cornerRadius: CGFloat) -> some View {
+        if #available(iOS 26, macOS 26, *) {
+            glassEffect(
+                .regular.tint(PomodoroughTheme.track.opacity(0.66)),
+                in: .rect(cornerRadius: cornerRadius)
+            )
+        } else {
+            background(PomodoroughTheme.track, in: .rect(cornerRadius: cornerRadius))
         }
     }
 }
