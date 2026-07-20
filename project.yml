@@ -41,6 +41,7 @@ targets:
       properties:
         CFBundleDisplayName: Pomodorough
         GIDClientID: $(GOOGLE_CLIENT_ID)
+        NSAlarmKitUsageDescription: Pomodorough schedules alarms so completed focus sessions and breaks alert you even when the app is not open.
         CFBundleURLTypes:
           - CFBundleURLSchemes:
               - $(GOOGLE_REVERSED_CLIENT_ID)

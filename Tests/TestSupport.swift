@@ -49,6 +49,36 @@ enum TestFixtures {
     }
 }
 
+enum RecordedAlarmOperation: Equatable {
+    case schedule(timerID: String, phase: TimerPhase, duration: TimeInterval)
+    case pause(timerID: String)
+    case resume(timerID: String)
+    case cancel(timerID: String)
+}
+
+@MainActor
+final class RecordingAlarmScheduler: TimerAlarmScheduling {
+    var operations: [RecordedAlarmOperation] = []
+    var schedulingError: Error?
+
+    func schedule(timerID: String, phase: TimerPhase, duration: TimeInterval) async throws {
+        operations.append(.schedule(timerID: timerID, phase: phase, duration: duration))
+        if let schedulingError { throw schedulingError }
+    }
+
+    func pause(timerID: String) throws {
+        operations.append(.pause(timerID: timerID))
+    }
+
+    func resume(timerID: String) throws {
+        operations.append(.resume(timerID: timerID))
+    }
+
+    func cancel(timerID: String) throws {
+        operations.append(.cancel(timerID: timerID))
+    }
+}
+
 final class StubURLProtocol: URLProtocol {
     override class func canInit(with request: URLRequest) -> Bool {
         request.value(forHTTPHeaderField: "X-Pomodorough-Test-Scenario") != nil

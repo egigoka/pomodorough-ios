@@ -4,6 +4,11 @@ import Testing
 
 @Suite("Unit Negative")
 struct UnitNegativeTests {
+    @Test func timerAlarmIdentityRejectsMalformedTimerIDs() {
+        #expect(TimerAlarmScheduler.alarmID(for: "remote-timer") == nil)
+        #expect(TimerAlarmScheduler.alarmID(for: "timer-not-a-uuid") == nil)
+    }
+
     @Test func settingsClampDurationsOutsideAPIContract() {
         var settings = TimerSettings()
 

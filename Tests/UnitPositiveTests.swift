@@ -4,6 +4,12 @@ import Testing
 
 @Suite("Unit Positive")
 struct UnitPositiveTests {
+    @Test func timerAlarmIdentityUsesTimerUUID() throws {
+        let uuid = try #require(UUID(uuidString: "83A06D73-1D2D-441E-AFC2-E36DA0518613"))
+
+        #expect(TimerAlarmScheduler.alarmID(for: "timer-\(uuid.uuidString.lowercased())") == uuid)
+    }
+
     @Test func runningTimerClampsAtPlannedDuration() {
         let timer = TestFixtures.timer(status: .running, elapsed: 50_000)
 

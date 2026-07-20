@@ -31,6 +31,8 @@
 	<string>1</string>
 	<key>GIDClientID</key>
 	<string>$(GOOGLE_CLIENT_ID)</string>
+	<key>NSAlarmKitUsageDescription</key>
+	<string>Pomodorough schedules alarms so completed focus sessions and breaks alert you even when the app is not open.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

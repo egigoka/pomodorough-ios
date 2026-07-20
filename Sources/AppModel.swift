@@ -12,8 +12,10 @@ final class AppModel {
 
     private let api: APIClient
     private let defaults: UserDefaults
+    private let alarmScheduler: any TimerAlarmScheduling
     private var timerState: PersistedTimerState
     @ObservationIgnored private var retryTask: Task<Void, Never>?
+    @ObservationIgnored private var alarmOperationTask: Task<Void, Never>?
     @ObservationIgnored private var syncOwnership = SyncOwnership()
     @ObservationIgnored private var sessionVerification = SessionVerification()
     @ObservationIgnored private var sessionVerificationOwner: UUID?
@@ -33,9 +35,14 @@ final class AppModel {
     private(set) var conflictMessage: String?
     var errorMessage: String?
 
-    init(api: APIClient = APIClient(), defaults: UserDefaults = .standard) {
+    init(
+        api: APIClient = APIClient(),
+        defaults: UserDefaults = .standard,
+        alarmScheduler: (any TimerAlarmScheduling)? = nil
+    ) {
         self.api = api
         self.defaults = defaults
+        self.alarmScheduler = alarmScheduler ?? TimerAlarmScheduler()
         let storedData = defaults.data(forKey: Self.storageKey) ?? defaults.data(forKey: "timer-state")
         if let data = storedData,
            let state = try? JSONDecoder.api.decode(PersistedTimerState.self, from: data) {
@@ -48,6 +55,7 @@ final class AppModel {
 
     deinit {
         retryTask?.cancel()
+        alarmOperationTask?.cancel()
         revisionStreamTask?.cancel()
         remotePollingTask?.cancel()
     }
@@ -182,6 +190,9 @@ final class AppModel {
 
     func signOut() {
         guard !isWorking else { return }
+        if let timer = canonicalTimer {
+            cancelAlarm(timerID: timer.id)
+        }
         sessionGeneration += 1
         sessionState = .signedOut
         isOffline = false
@@ -207,29 +218,52 @@ final class AppModel {
 
     func start() {
         let minutes = durationMinutes(for: selectedPhase)
+        let timerID = "timer-\(UUID().uuidString.lowercased())"
+        let phase = selectedPhase
+        let duration = TimeInterval(minutes * 60)
+        let shouldScheduleAlarm = !isTimerActive
         enqueue(
             .start,
-            timerID: "timer-\(UUID().uuidString.lowercased())",
-            phase: selectedPhase,
-            duration: TimeInterval(minutes * 60),
+            timerID: timerID,
+            phase: phase,
+            duration: duration,
             elapsed: 0
         )
+        guard shouldScheduleAlarm else { return }
+        enqueueAlarmOperation { [alarmScheduler] in
+            try await alarmScheduler.schedule(timerID: timerID, phase: phase, duration: duration)
+        }
     }
 
     func pause(at date: Date = .now) {
         guard let timer = canonicalTimer else { return }
         enqueue(.pause, timer: timer, elapsed: timer.elapsed(at: date))
+        guard timer.status == .running else { return }
+        enqueueAlarmOperation { [alarmScheduler] in
+            try alarmScheduler.pause(timerID: timer.id)
+        }
     }
 
     func resume(at date: Date = .now) {
         guard let timer = canonicalTimer else { return }
         enqueue(.resume, timer: timer, elapsed: timer.elapsed(at: date))
+        guard timer.status == .paused else { return }
+        enqueueAlarmOperation { [alarmScheduler] in
+            try alarmScheduler.resume(timerID: timer.id)
+        }
     }
 
     func finish(at date: Date = .now) {
+        finish(at: date, cancelsAlarm: true)
+    }
+
+    private func finish(at date: Date, cancelsAlarm: Bool) {
         guard let timer = canonicalTimer else { return }
         let finishedPhase = timer.phase
         enqueue(.finish, timer: timer, elapsed: timer.elapsed(at: date))
+        if cancelsAlarm, timer.status == .running || timer.status == .paused {
+            cancelAlarm(timerID: timer.id)
+        }
         guard finishedPhase == .focus, autoStartBreaks else { return }
         selectedPhase = nextBreakPhase()
         start()
@@ -238,11 +272,15 @@ final class AppModel {
     func cancel(at date: Date = .now) {
         guard let timer = canonicalTimer else { return }
         enqueue(.cancel, timer: timer, elapsed: timer.elapsed(at: date))
+        if timer.status == .running || timer.status == .paused {
+            cancelAlarm(timerID: timer.id)
+        }
     }
 
     func clear() {
         guard let timer = canonicalTimer, !isTimerActive else { return }
         enqueue(.clear, timer: timer, elapsed: timer.elapsed(at: .now))
+        cancelAlarm(timerID: timer.id)
     }
 
     func completeIfNeeded(timerID: String, at date: Date) {
@@ -252,7 +290,11 @@ final class AppModel {
               timer.remaining(at: date) <= 0,
               completionQueuedFor != timer.id else { return }
         completionQueuedFor = timer.id
-        finish(at: date)
+        finish(at: date, cancelsAlarm: false)
+    }
+
+    func waitForAlarmOperations() async {
+        await alarmOperationTask?.value
     }
 
     func dismissConflict() { conflictMessage = nil }
@@ -389,6 +431,27 @@ final class AppModel {
         rebuildOptimisticState()
         persist()
         Task { await sync() }
+    }
+
+    private func cancelAlarm(timerID: String) {
+        enqueueAlarmOperation { [alarmScheduler] in
+            try alarmScheduler.cancel(timerID: timerID)
+        }
+    }
+
+    private func enqueueAlarmOperation(
+        _ operation: @escaping @MainActor () async throws -> Void
+    ) {
+        let previousOperation = alarmOperationTask
+        alarmOperationTask = Task { [weak self] in
+            await previousOperation?.value
+            guard !Task.isCancelled else { return }
+            do {
+                try await operation()
+            } catch {
+                self?.errorMessage = "Timer continues in Pomodorough, but its system alarm could not be updated. \(error.localizedDescription)"
+            }
+        }
     }
 
     private func rebuildOptimisticState() {

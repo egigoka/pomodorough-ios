@@ -9,7 +9,7 @@ struct IntegrationNegativeTests {
         let suiteName = "PomodoroughTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
-        let model = AppModel(defaults: defaults)
+        let model = AppModel(defaults: defaults, alarmScheduler: RecordingAlarmScheduler())
         model.start()
         let timer = try #require(model.canonicalTimer)
 
@@ -31,7 +31,7 @@ struct IntegrationNegativeTests {
         defer { defaults.removePersistentDomain(forName: suiteName) }
         defaults.set(Data("not-json".utf8), forKey: "timer-state-v2")
 
-        let model = AppModel(defaults: defaults)
+        let model = AppModel(defaults: defaults, alarmScheduler: RecordingAlarmScheduler())
 
         #expect(model.canonicalTimer == nil)
         #expect(model.history.isEmpty)
@@ -44,7 +44,7 @@ struct IntegrationNegativeTests {
         let suiteName = "PomodoroughTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
-        let model = AppModel(defaults: defaults)
+        let model = AppModel(defaults: defaults, alarmScheduler: RecordingAlarmScheduler())
 
         model.pause()
         model.resume()
@@ -70,6 +70,23 @@ struct IntegrationNegativeTests {
         } catch {
             Issue.record("Unexpected error: \(error)")
         }
+    }
+
+    @Test @MainActor
+    func deniedAlarmAuthorizationKeepsTimerRunningAndReportsFallback() async throws {
+        let suiteName = "PomodoroughTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let scheduler = RecordingAlarmScheduler()
+        scheduler.schedulingError = TimerAlarmError.authorizationDenied
+        let model = AppModel(defaults: defaults, alarmScheduler: scheduler)
+
+        model.start()
+        await model.waitForAlarmOperations()
+
+        #expect(model.canonicalTimer?.status == .running)
+        #expect(model.errorMessage?.contains("Timer continues in Pomodorough") == true)
+        #expect(model.errorMessage?.contains("Allow alarms in Settings") == true)
     }
 
     @Test func apiClientMapsUnauthorizedResponse() async {
