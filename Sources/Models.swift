@@ -452,6 +452,7 @@ struct PersistedTimerState: Codable, Equatable, Sendable {
     var tasks: [FocusTask]
     var knownTasks: [FocusTask]
     var selectedTaskID: UUID?
+    var legacyTaskAssignments: [String: UUID]
     var settings: TimerSettings
     var cachedUser: User?
 
@@ -469,6 +470,7 @@ struct PersistedTimerState: Codable, Equatable, Sendable {
             tasks: [],
             knownTasks: [],
             selectedTaskID: nil,
+            legacyTaskAssignments: [:],
             settings: TimerSettings(),
             cachedUser: nil
         )
@@ -488,7 +490,7 @@ struct PersistedTimerState: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case deviceId, nextSequence, revision, hlcWallMs, hlcCounter
         case pendingCommands, pendingTaskOperations, canonicalTimer, history
-        case tasks, knownTasks, selectedTaskID, settings, cachedUser
+        case tasks, knownTasks, selectedTaskID, legacyTaskAssignments, settings, cachedUser
     }
 
     init(
@@ -504,6 +506,7 @@ struct PersistedTimerState: Codable, Equatable, Sendable {
         tasks: [FocusTask],
         knownTasks: [FocusTask],
         selectedTaskID: UUID?,
+        legacyTaskAssignments: [String: UUID],
         settings: TimerSettings,
         cachedUser: User?
     ) {
@@ -519,6 +522,7 @@ struct PersistedTimerState: Codable, Equatable, Sendable {
         self.tasks = tasks
         self.knownTasks = knownTasks
         self.selectedTaskID = selectedTaskID
+        self.legacyTaskAssignments = legacyTaskAssignments
         self.settings = settings
         self.cachedUser = cachedUser
     }
@@ -537,12 +541,14 @@ struct PersistedTimerState: Codable, Equatable, Sendable {
         tasks = try values.decodeIfPresent([FocusTask].self, forKey: .tasks) ?? []
         knownTasks = try values.decodeIfPresent([FocusTask].self, forKey: .knownTasks) ?? tasks
         selectedTaskID = try values.decodeIfPresent(UUID.self, forKey: .selectedTaskID)
+        legacyTaskAssignments = try values.decodeIfPresent([String: UUID].self, forKey: .legacyTaskAssignments) ?? [:]
         settings = try values.decodeIfPresent(TimerSettings.self, forKey: .settings) ?? TimerSettings()
         cachedUser = try values.decodeIfPresent(User.self, forKey: .cachedUser)
     }
 
     mutating func migrateLegacyTasks(_ legacy: LocalTaskState, at date: Date = .now) {
         mergeKnownTasks(legacy.tasks + Array(legacy.assignments.values))
+        legacyTaskAssignments.merge(legacy.assignments.mapValues(\.id)) { _, migrated in migrated }
         for task in legacy.tasks where !tasks.contains(where: { $0.id == task.id }) {
             tasks.append(task)
         }

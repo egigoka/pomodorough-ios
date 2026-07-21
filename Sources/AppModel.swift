@@ -166,7 +166,8 @@ final class AppModel {
         let taskID = canonicalTimer.flatMap { $0.id == timerID ? $0.taskId : nil }
             ?? history.first(where: { $0.timerId == timerID })?.taskId
             ?? timerState.pendingCommands.first(where: { $0.timerId == timerID && $0.type == .start })?.taskId
-        guard let taskID, let uuid = UUID(uuidString: taskID) else { return nil }
+        let uuid = taskID.flatMap(UUID.init(uuidString:)) ?? timerState.legacyTaskAssignments[timerID]
+        guard let uuid else { return nil }
         return tasks.first(where: { $0.id == uuid })
             ?? timerState.knownTasks.first(where: { $0.id == uuid })
     }
@@ -178,8 +179,8 @@ final class AppModel {
                   item.status == "completed",
                   let completedAt = item.completedAt,
                   calendar.isDate(completedAt, inSameDayAs: date),
-                  let taskID = item.taskId,
-                  let uuid = UUID(uuidString: taskID) else { continue }
+                  let uuid = item.taskId.flatMap(UUID.init(uuidString:))
+                    ?? timerState.legacyTaskAssignments[item.timerId] else { continue }
             let current = totals[uuid] ?? (0, 0)
             totals[uuid] = (current.finished + 1, current.timeMs + item.plannedDurationMs)
         }
