@@ -46,11 +46,17 @@ final class AppModel {
         self.defaults = defaults
         self.alarmScheduler = alarmScheduler ?? TimerAlarmScheduler()
         let storedData = defaults.data(forKey: Self.storageKey) ?? defaults.data(forKey: "timer-state")
+        let migratedLegacyDurations: Bool
         if let data = storedData,
            let state = try? JSONDecoder.api.decode(PersistedTimerState.self, from: data) {
             timerState = state
+            migratedLegacyDurations = !Self.hasPersistedDurationOperations(in: data)
+            if migratedLegacyDurations {
+                timerState.migrateLegacyDurationSettings()
+            }
         } else {
             timerState = .fresh()
+            migratedLegacyDurations = false
         }
         let migratedLegacyTasks: Bool
         if let data = defaults.data(forKey: Self.localTaskStorageKey),
@@ -65,7 +71,7 @@ final class AppModel {
         needsPermissionIntroduction = !defaults.bool(forKey: Self.permissionIntroductionKey)
 #endif
         rebuildOptimisticState()
-        if migratedLegacyTasks { persist() }
+        if migratedLegacyTasks || migratedLegacyDurations { persist() }
     }
 
     deinit {
@@ -119,7 +125,10 @@ final class AppModel {
     }
 
     var pendingCommandCount: Int { timerState.pendingCommands.count }
-    var pendingChangeCount: Int { pendingCommandCount + timerState.pendingTaskOperations.count }
+    var pendingDurationOperationCount: Int { timerState.pendingDurationOperations.count }
+    var pendingChangeCount: Int {
+        pendingCommandCount + timerState.pendingTaskOperations.count + pendingDurationOperationCount
+    }
     var completedFocusCount: Int { history.count { $0.status == "completed" && $0.phase == .focus } }
     var deviceMark: String { String(timerState.deviceId.suffix(4)).uppercased() }
 
@@ -141,10 +150,24 @@ final class AppModel {
     }
 
     func setDurationMinutes(_ minutes: Int, for phase: TimerPhase) {
-        guard !isTimerActive else { return }
+        let clamped = min(180, max(1, minutes))
+        let durationMs = Int64(clamped) * 60_000
+        guard timerState.settings.durationMs(for: phase) != durationMs else { return }
         clearInactiveTimerForConfigurationChange()
-        timerState.settings.setMinutes(minutes, for: phase)
+        let now = Date.now
+        timerState.advanceClock(at: now)
+        timerState.pendingDurationOperations.removeAll { $0.phase == phase }
+        timerState.pendingDurationOperations.append(DurationOperation(
+            id: "duration-operation-\(UUID().uuidString.lowercased())",
+            phase: phase,
+            durationMs: durationMs,
+            occurredAt: now,
+            hlcWallMs: timerState.hlcWallMs,
+            hlcCounter: timerState.hlcCounter
+        ))
+        timerState.settings.setMinutes(clamped, for: phase)
         persist()
+        Task { await sync() }
     }
 
     @discardableResult
@@ -302,10 +325,9 @@ final class AppModel {
     }
 
     func start() {
-        let minutes = durationMinutes(for: selectedPhase)
         let timerID = "timer-\(UUID().uuidString.lowercased())"
         let phase = selectedPhase
-        let duration = TimeInterval(minutes * 60)
+        let duration = TimeInterval(timerState.settings.durationMs(for: phase)) / 1_000
         let shouldScheduleAlarm = !isTimerActive
         let taskID = phase == .focus
             ? timerState.selectedTaskID.flatMap { selected in
@@ -402,15 +424,20 @@ final class AppModel {
             await verifyRestoredSession(generation: generation)
             return
         }
-        if !force, timerState.pendingCommands.isEmpty, timerState.pendingTaskOperations.isEmpty { return }
+        if !force,
+           timerState.pendingCommands.isEmpty,
+           timerState.pendingTaskOperations.isEmpty,
+           timerState.pendingDurationOperations.isEmpty { return }
         guard let syncID = syncOwnership.begin(generation: generation) else { return }
+        var allowsFollowUpSync = true
         retryTask?.cancel()
         if showsActivity { isSyncing = true }
         defer {
             if let requestedFollowUp = syncOwnership.finish(syncID, currentGeneration: sessionGeneration) {
                 if showsActivity { isSyncing = false }
                 let hintedFollowUp = revisionHints.consumeFollowUp(localRevision: timerState.revision)
-                if isSignedIn,
+                if allowsFollowUpSync,
+                   isSignedIn,
                    (requestedFollowUp || (generation == sessionGeneration && hintedFollowUp)) {
                     Task { [weak self] in await self?.sync(force: true) }
                 }
@@ -420,44 +447,68 @@ final class AppModel {
             repeat {
                 let batch = Array(timerState.pendingCommands.prefix(256))
                 let taskBatch = Array(timerState.pendingTaskOperations.prefix(256))
+                let durationBatch = Array(timerState.pendingDurationOperations.prefix(256))
+                guard durationBatch.allSatisfy(\.isValid) else { throw AppError.invalidResponse }
                 let response = try await api.sync(
                     SyncRequest(
                         deviceId: timerState.deviceId,
                         lastRevision: timerState.revision,
                         commands: batch,
-                        taskOperations: taskBatch
+                        taskOperations: taskBatch,
+                        durationOperations: durationBatch
                     )
                 )
                 guard generation == sessionGeneration, isSignedIn else { return }
 
-                let sentIDs = Set(batch.map(\.id))
-                let acknowledgedIDs = Set(response.acknowledgements.map(\.commandId))
-                guard sentIDs == acknowledgedIDs else { throw AppError.invalidResponse }
-                let sentTaskIDs = Set(taskBatch.map(\.id))
-                let acknowledgedTaskIDs = Set(response.taskAcknowledgements.map(\.operationId))
-                guard sentTaskIDs == acknowledgedTaskIDs else { throw AppError.invalidResponse }
-                timerState.pendingCommands.removeAll { acknowledgedIDs.contains($0.id) }
-                timerState.pendingTaskOperations.removeAll { acknowledgedTaskIDs.contains($0.id) }
+                let sentIDs = batch.map(\.id)
+                let acknowledgedIDs = response.acknowledgements.map(\.commandId)
+                guard AcknowledgementSet.exactlyMatches(sent: sentIDs, acknowledged: acknowledgedIDs) else {
+                    throw AppError.invalidResponse
+                }
+                let sentTaskIDs = taskBatch.map(\.id)
+                let acknowledgedTaskIDs = response.taskAcknowledgements.map(\.operationId)
+                guard AcknowledgementSet.exactlyMatches(sent: sentTaskIDs, acknowledged: acknowledgedTaskIDs) else {
+                    throw AppError.invalidResponse
+                }
+                try timerState.applyDurationSync(
+                    canonicalDurations: response.durationsMs,
+                    sentOperations: durationBatch,
+                    acknowledgements: response.durationAcknowledgements
+                )
+                let acknowledgedIDSet = Set(acknowledgedIDs)
+                let acknowledgedTaskIDSet = Set(acknowledgedTaskIDs)
+                timerState.pendingCommands.removeAll { acknowledgedIDSet.contains($0.id) }
+                timerState.pendingTaskOperations.removeAll { acknowledgedTaskIDSet.contains($0.id) }
                 if let conflict = response.acknowledgements.first(where: { $0.outcome != "applied" }) {
                     conflictMessage = conflict.reason.isEmpty ? "Server resolved a timer action as \(conflict.outcome)." : conflict.reason
                 } else if let conflict = response.taskAcknowledgements.first(where: { $0.outcome != "applied" }) {
                     conflictMessage = conflict.reason.isEmpty ? "Server resolved a task change as \(conflict.outcome)." : conflict.reason
+                } else if let conflict = response.durationAcknowledgements.first(where: { $0.outcome != "applied" }) {
+                    conflictMessage = conflict.reason.isEmpty ? "Server resolved a duration change as \(conflict.outcome)." : conflict.reason
                 }
                 timerState.revision = response.revision
                 timerState.canonicalTimer = response.canonicalTimer
                 timerState.history = response.history
                 timerState.tasks = response.tasks
                 timerState.mergeKnownTasks(response.tasks)
-                mergeServerClock(response.serverHlcWallMs)
+                mergeServerClock(response.serverHlcWallMs, response.serverHlcCounter)
                 rebuildOptimisticState()
                 isOffline = false
                 errorMessage = nil
                 persist()
-            } while !timerState.pendingCommands.isEmpty || !timerState.pendingTaskOperations.isEmpty
+            } while !timerState.pendingCommands.isEmpty
+                || !timerState.pendingTaskOperations.isEmpty
+                || !timerState.pendingDurationOperations.isEmpty
             startRevisionStream()
             startRemotePolling()
         } catch AppError.unauthorized {
             await invalidateUnauthorizedSession(generation: generation)
+        } catch AppError.invalidResponse {
+            guard generation == sessionGeneration, isSignedIn else { return }
+            allowsFollowUpSync = false
+            isOffline = false
+            errorMessage = "Sync paused because the server response did not match queued changes. \(pendingChangeCount) queued changes remain on this device."
+            cancelRevisionStream()
         } catch {
             guard generation == sessionGeneration, isSignedIn else { return }
             isOffline = true
@@ -601,6 +652,10 @@ final class AppModel {
             }
         }
         tasks = TaskReducer.applying(timerState.pendingTaskOperations, to: timerState.tasks)
+        timerState.settings.durationsMs = DurationReducer.applying(
+            timerState.pendingDurationOperations,
+            to: timerState.settings.durationsMs
+        )
         if let selected = timerState.selectedTaskID,
            !tasks.contains(where: { $0.id == selected }) {
             timerState.selectedTaskID = nil
@@ -608,11 +663,18 @@ final class AppModel {
         if canonicalTimer?.status != .running { completionQueuedFor = nil }
     }
 
-    private func mergeServerClock(_ serverWallMs: Int64) {
+    private func mergeServerClock(_ serverWallMs: Int64, _ serverCounter: Int64) {
         let nowMs = Int64(Date.now.timeIntervalSince1970 * 1_000)
-        let merged = max(nowMs, serverWallMs, timerState.hlcWallMs)
-        timerState.hlcCounter = merged == timerState.hlcWallMs ? timerState.hlcCounter : 0
-        timerState.hlcWallMs = merged
+        let candidates = [
+            (wallMs: nowMs, counter: Int64(0)),
+            (wallMs: timerState.hlcWallMs, counter: timerState.hlcCounter),
+            (wallMs: serverWallMs, counter: serverCounter)
+        ]
+        let merged = candidates.max {
+            $0.wallMs != $1.wallMs ? $0.wallMs < $1.wallMs : $0.counter < $1.counter
+        }!
+        timerState.hlcWallMs = merged.wallMs
+        timerState.hlcCounter = merged.counter
     }
 
     private func verifyRestoredSession(generation: Int) async {
@@ -764,6 +826,11 @@ final class AppModel {
     private static let storageKey = "timer-state-v2"
     private static let localTaskStorageKey = "local-tasks-v1"
     private static let permissionIntroductionKey = "permission-introduction-completed-v1"
+
+    private static func hasPersistedDurationOperations(in data: Data) -> Bool {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+        return object.keys.contains("pendingDurationOperations")
+    }
 
     private static var platform: String {
 #if os(iOS)

@@ -218,28 +218,165 @@ enum TimerPhase: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 }
 
+struct DurationValues: Codable, Equatable, Sendable {
+    static let wireUnitMs: Int64 = 60_000
+    static let validRange: ClosedRange<Int64> = 60_000...10_800_000
+    static let defaults = Self(
+        focus: Int64(TimerPhase.focus.defaultMinutes) * 60_000,
+        shortBreak: Int64(TimerPhase.shortBreak.defaultMinutes) * 60_000,
+        longBreak: Int64(TimerPhase.longBreak.defaultMinutes) * 60_000
+    )
+
+    var focus: Int64
+    var shortBreak: Int64
+    var longBreak: Int64
+
+    var isValid: Bool {
+        Self.isValidWireDuration(focus)
+            && Self.isValidWireDuration(shortBreak)
+            && Self.isValidWireDuration(longBreak)
+    }
+
+    static func isValidWireDuration(_ durationMs: Int64) -> Bool {
+        validRange.contains(durationMs) && durationMs.isMultiple(of: wireUnitMs)
+    }
+
+    func durationMs(for phase: TimerPhase) -> Int64 {
+        switch phase {
+        case .focus: focus
+        case .shortBreak: shortBreak
+        case .longBreak: longBreak
+        }
+    }
+
+    mutating func setDurationMs(_ durationMs: Int64, for phase: TimerPhase) {
+        switch phase {
+        case .focus: focus = durationMs
+        case .shortBreak: shortBreak = durationMs
+        case .longBreak: longBreak = durationMs
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case focus
+        case shortBreak = "short_break"
+        case longBreak = "long_break"
+    }
+}
+
 struct TimerSettings: Codable, Equatable, Sendable {
     var selectedPhase: TimerPhase = .focus
-    var focusMinutes = TimerPhase.focus.defaultMinutes
-    var shortBreakMinutes = TimerPhase.shortBreak.defaultMinutes
-    var longBreakMinutes = TimerPhase.longBreak.defaultMinutes
     var autoStartBreaks = false
+    private var focusDurationMs = DurationValues.defaults.focus
+    private var shortBreakDurationMs = DurationValues.defaults.shortBreak
+    private var longBreakDurationMs = DurationValues.defaults.longBreak
+
+    var focusMinutes: Int {
+        get { minutes(for: .focus) }
+        set { setMinutes(newValue, for: .focus) }
+    }
+
+    var shortBreakMinutes: Int {
+        get { minutes(for: .shortBreak) }
+        set { setMinutes(newValue, for: .shortBreak) }
+    }
+
+    var longBreakMinutes: Int {
+        get { minutes(for: .longBreak) }
+        set { setMinutes(newValue, for: .longBreak) }
+    }
+
+    init() {}
 
     func minutes(for phase: TimerPhase) -> Int {
-        switch phase {
-        case .focus: focusMinutes
-        case .shortBreak: shortBreakMinutes
-        case .longBreak: longBreakMinutes
-        }
+        Int(durationMs(for: phase) / DurationValues.wireUnitMs)
+    }
+
+    func durationMs(for phase: TimerPhase) -> Int64 {
+        durationsMs.durationMs(for: phase)
     }
 
     mutating func setMinutes(_ minutes: Int, for phase: TimerPhase) {
         let clamped = min(180, max(1, minutes))
-        switch phase {
-        case .focus: focusMinutes = clamped
-        case .shortBreak: shortBreakMinutes = clamped
-        case .longBreak: longBreakMinutes = clamped
+        var durations = durationsMs
+        durations.setDurationMs(Int64(clamped) * 60_000, for: phase)
+        durationsMs = durations
+    }
+
+    var durationsMs: DurationValues {
+        get {
+            DurationValues(
+                focus: focusDurationMs,
+                shortBreak: shortBreakDurationMs,
+                longBreak: longBreakDurationMs
+            )
         }
+        set {
+            focusDurationMs = Self.normalizedDuration(newValue.focus)
+            shortBreakDurationMs = Self.normalizedDuration(newValue.shortBreak)
+            longBreakDurationMs = Self.normalizedDuration(newValue.longBreak)
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case selectedPhase, autoStartBreaks
+        case focusDurationMs, shortBreakDurationMs, longBreakDurationMs
+        case focusMinutes, shortBreakMinutes, longBreakMinutes
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        selectedPhase = try values.decodeIfPresent(TimerPhase.self, forKey: .selectedPhase) ?? .focus
+        autoStartBreaks = try values.decodeIfPresent(Bool.self, forKey: .autoStartBreaks) ?? false
+        focusDurationMs = Self.decodedDuration(
+            from: values,
+            durationKey: .focusDurationMs,
+            legacyMinutesKey: .focusMinutes,
+            defaultValue: DurationValues.defaults.focus
+        )
+        shortBreakDurationMs = Self.decodedDuration(
+            from: values,
+            durationKey: .shortBreakDurationMs,
+            legacyMinutesKey: .shortBreakMinutes,
+            defaultValue: DurationValues.defaults.shortBreak
+        )
+        longBreakDurationMs = Self.decodedDuration(
+            from: values,
+            durationKey: .longBreakDurationMs,
+            legacyMinutesKey: .longBreakMinutes,
+            defaultValue: DurationValues.defaults.longBreak
+        )
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(selectedPhase, forKey: .selectedPhase)
+        try values.encode(autoStartBreaks, forKey: .autoStartBreaks)
+        try values.encode(focusDurationMs, forKey: .focusDurationMs)
+        try values.encode(shortBreakDurationMs, forKey: .shortBreakDurationMs)
+        try values.encode(longBreakDurationMs, forKey: .longBreakDurationMs)
+    }
+
+    private static func decodedDuration(
+        from values: KeyedDecodingContainer<CodingKeys>,
+        durationKey: CodingKeys,
+        legacyMinutesKey: CodingKeys,
+        defaultValue: Int64
+    ) -> Int64 {
+        let duration = (try? values.decodeIfPresent(Int64.self, forKey: durationKey)) ?? nil
+        let legacyMinutes = (try? values.decodeIfPresent(Int.self, forKey: legacyMinutesKey)) ?? nil
+        if let duration {
+            return normalizedDuration(duration)
+        }
+        if let legacyMinutes {
+            return Int64(min(180, max(1, legacyMinutes))) * DurationValues.wireUnitMs
+        }
+        return defaultValue
+    }
+
+    private static func normalizedDuration(_ durationMs: Int64) -> Int64 {
+        let clamped = min(DurationValues.validRange.upperBound, max(DurationValues.validRange.lowerBound, durationMs))
+        return ((clamped + DurationValues.wireUnitMs / 2) / DurationValues.wireUnitMs) * DurationValues.wireUnitMs
     }
 }
 
@@ -266,6 +403,7 @@ struct SyncRequest: Encodable, Sendable {
     let lastRevision: Int64
     let commands: [TimerCommand]
     let taskOperations: [TaskOperation]
+    let durationOperations: [DurationOperation]
 }
 
 struct Acknowledgement: Codable, Equatable, Sendable {
@@ -292,6 +430,38 @@ struct TaskAcknowledgement: Codable, Equatable, Sendable {
     let operationId: String
     let outcome: String
     let reason: String
+}
+
+struct DurationOperation: Codable, Identifiable, Equatable, Sendable {
+    let id: String
+    let phase: TimerPhase
+    let durationMs: Int64
+    let occurredAt: Date
+    let hlcWallMs: Int64
+    let hlcCounter: Int64
+
+    var isValid: Bool {
+        DurationValues.isValidWireDuration(durationMs)
+            && hlcCounter >= 0
+            && ((hlcWallMs == 0 && hlcCounter == 0) || hlcWallMs > 0)
+    }
+}
+
+struct DurationAcknowledgement: Codable, Equatable, Sendable {
+    let operationId: String
+    let outcome: String
+    let reason: String
+}
+
+enum AcknowledgementSet {
+    static func exactlyMatches(sent: [String], acknowledged: [String]) -> Bool {
+        guard sent.count == acknowledged.count else { return false }
+        let sentSet = Set(sent)
+        let acknowledgedSet = Set(acknowledged)
+        return sentSet.count == sent.count
+            && acknowledgedSet.count == acknowledged.count
+            && sentSet == acknowledgedSet
+    }
 }
 
 struct TimerIntent: Codable, Equatable, Sendable {
@@ -412,28 +582,35 @@ struct TaskDailySummary: Identifiable, Equatable, Sendable {
 struct SyncResponse: Decodable, Sendable {
     let acknowledgements: [Acknowledgement]
     let taskAcknowledgements: [TaskAcknowledgement]
+    let durationAcknowledgements: [DurationAcknowledgement]
+    let durationsMs: DurationValues
     let revision: Int64
     let canonicalTimer: CanonicalTimer?
     let history: [HistoryItem]
     let tasks: [FocusTask]
     let serverTime: Date
     let serverHlcWallMs: Int64
+    let serverHlcCounter: Int64
 
     private enum CodingKeys: String, CodingKey {
-        case acknowledgements, taskAcknowledgements, revision, canonicalTimer
-        case history, tasks, serverTime, serverHlcWallMs
+        case acknowledgements, taskAcknowledgements, durationAcknowledgements, durationsMs
+        case revision, canonicalTimer
+        case history, tasks, serverTime, serverHlcWallMs, serverHlcCounter
     }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         acknowledgements = try values.decode([Acknowledgement].self, forKey: .acknowledgements)
         taskAcknowledgements = try values.decodeIfPresent([TaskAcknowledgement].self, forKey: .taskAcknowledgements) ?? []
+        durationAcknowledgements = try values.decode([DurationAcknowledgement].self, forKey: .durationAcknowledgements)
+        durationsMs = try values.decode(DurationValues.self, forKey: .durationsMs)
         revision = try values.decode(Int64.self, forKey: .revision)
         canonicalTimer = try values.decodeIfPresent(CanonicalTimer.self, forKey: .canonicalTimer)
         history = try values.decode([HistoryItem].self, forKey: .history)
         tasks = try values.decodeIfPresent([FocusTask].self, forKey: .tasks) ?? []
         serverTime = try values.decode(Date.self, forKey: .serverTime)
         serverHlcWallMs = try values.decode(Int64.self, forKey: .serverHlcWallMs)
+        serverHlcCounter = try values.decode(Int64.self, forKey: .serverHlcCounter)
     }
 }
 
@@ -447,6 +624,7 @@ struct PersistedTimerState: Codable, Equatable, Sendable {
     var hlcCounter: Int64
     var pendingCommands: [TimerCommand]
     var pendingTaskOperations: [TaskOperation]
+    var pendingDurationOperations: [DurationOperation]
     var canonicalTimer: CanonicalTimer?
     var history: [HistoryItem]
     var tasks: [FocusTask]
@@ -465,6 +643,7 @@ struct PersistedTimerState: Codable, Equatable, Sendable {
             hlcCounter: 0,
             pendingCommands: [],
             pendingTaskOperations: [],
+            pendingDurationOperations: [],
             canonicalTimer: nil,
             history: [],
             tasks: [],
@@ -479,17 +658,19 @@ struct PersistedTimerState: Codable, Equatable, Sendable {
     mutating func prepare(for authenticatedUser: User) {
         if let previousUser = cachedUser, previousUser.id != authenticatedUser.id {
             let existingDeviceID = deviceId
-            let existingSettings = settings
+            let existingSelectedPhase = settings.selectedPhase
+            let existingAutoStartBreaks = settings.autoStartBreaks
             self = .fresh()
             deviceId = existingDeviceID
-            settings = existingSettings
+            settings.selectedPhase = existingSelectedPhase
+            settings.autoStartBreaks = existingAutoStartBreaks
         }
         cachedUser = authenticatedUser
     }
 
     private enum CodingKeys: String, CodingKey {
         case deviceId, nextSequence, revision, hlcWallMs, hlcCounter
-        case pendingCommands, pendingTaskOperations, canonicalTimer, history
+        case pendingCommands, pendingTaskOperations, pendingDurationOperations, canonicalTimer, history
         case tasks, knownTasks, selectedTaskID, legacyTaskAssignments, settings, cachedUser
     }
 
@@ -501,6 +682,7 @@ struct PersistedTimerState: Codable, Equatable, Sendable {
         hlcCounter: Int64,
         pendingCommands: [TimerCommand],
         pendingTaskOperations: [TaskOperation],
+        pendingDurationOperations: [DurationOperation],
         canonicalTimer: CanonicalTimer?,
         history: [HistoryItem],
         tasks: [FocusTask],
@@ -517,6 +699,7 @@ struct PersistedTimerState: Codable, Equatable, Sendable {
         self.hlcCounter = hlcCounter
         self.pendingCommands = pendingCommands
         self.pendingTaskOperations = pendingTaskOperations
+        self.pendingDurationOperations = pendingDurationOperations
         self.canonicalTimer = canonicalTimer
         self.history = history
         self.tasks = tasks
@@ -536,6 +719,14 @@ struct PersistedTimerState: Codable, Equatable, Sendable {
         hlcCounter = try values.decodeIfPresent(Int64.self, forKey: .hlcCounter) ?? 0
         pendingCommands = try values.decode([TimerCommand].self, forKey: .pendingCommands)
         pendingTaskOperations = try values.decodeIfPresent([TaskOperation].self, forKey: .pendingTaskOperations) ?? []
+        pendingDurationOperations = try values.decodeIfPresent([DurationOperation].self, forKey: .pendingDurationOperations) ?? []
+        guard pendingDurationOperations.allSatisfy(\.isValid) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .pendingDurationOperations,
+                in: values,
+                debugDescription: "Pending duration operations must use minute durations and valid HLC values."
+            )
+        }
         canonicalTimer = try values.decodeIfPresent(CanonicalTimer.self, forKey: .canonicalTimer)
         history = try values.decode([HistoryItem].self, forKey: .history)
         tasks = try values.decodeIfPresent([FocusTask].self, forKey: .tasks) ?? []
@@ -621,6 +812,47 @@ struct PersistedTimerState: Codable, Equatable, Sendable {
         }
     }
 
+    mutating func migrateLegacyDurationSettings(at date: Date = .now) {
+        for phase in TimerPhase.allCases {
+            let durationMs = settings.durationMs(for: phase)
+            guard durationMs != DurationValues.defaults.durationMs(for: phase) else { continue }
+            pendingDurationOperations.append(DurationOperation(
+                id: "duration-operation-\(UUID().uuidString.lowercased())",
+                phase: phase,
+                durationMs: durationMs,
+                occurredAt: date,
+                hlcWallMs: 0,
+                hlcCounter: 0
+            ))
+        }
+    }
+
+    mutating func applyDurationSync(
+        canonicalDurations: DurationValues,
+        sentOperations: [DurationOperation],
+        acknowledgements: [DurationAcknowledgement]
+    ) throws {
+        let sentOperationIDs = sentOperations.map(\.id)
+        let acknowledgedOperationIDs = acknowledgements.map(\.operationId)
+        guard canonicalDurations.isValid,
+              sentOperations.allSatisfy(\.isValid),
+              AcknowledgementSet.exactlyMatches(
+                sent: sentOperationIDs,
+                acknowledged: acknowledgedOperationIDs
+              ) else {
+            throw AppError.invalidResponse
+        }
+        let sentIDSet = Set(sentOperationIDs)
+        let acknowledgedIDSet = Set(acknowledgedOperationIDs)
+        pendingDurationOperations.removeAll {
+            sentIDSet.contains($0.id) && acknowledgedIDSet.contains($0.id)
+        }
+        settings.durationsMs = DurationReducer.applying(
+            pendingDurationOperations,
+            to: canonicalDurations
+        )
+    }
+
     mutating func advanceClock(at date: Date) {
         let nowMs = Int64(date.timeIntervalSince1970 * 1_000)
         if nowMs > hlcWallMs {
@@ -656,6 +888,21 @@ enum TaskReducer {
     }
 
     private static func precedes(_ lhs: TaskOperation, _ rhs: TaskOperation) -> Bool {
+        if lhs.hlcWallMs != rhs.hlcWallMs { return lhs.hlcWallMs < rhs.hlcWallMs }
+        if lhs.hlcCounter != rhs.hlcCounter { return lhs.hlcCounter < rhs.hlcCounter }
+        return lhs.id < rhs.id
+    }
+}
+
+enum DurationReducer {
+    static func applying(_ operations: [DurationOperation], to base: DurationValues) -> DurationValues {
+        operations.sorted(by: precedes).reduce(into: base) { durations, operation in
+            guard operation.isValid else { return }
+            durations.setDurationMs(operation.durationMs, for: operation.phase)
+        }
+    }
+
+    private static func precedes(_ lhs: DurationOperation, _ rhs: DurationOperation) -> Bool {
         if lhs.hlcWallMs != rhs.hlcWallMs { return lhs.hlcWallMs < rhs.hlcWallMs }
         if lhs.hlcCounter != rhs.hlcCounter { return lhs.hlcCounter < rhs.hlcCounter }
         return lhs.id < rhs.id

@@ -5,7 +5,7 @@ import Testing
 @Suite("Integration Negative")
 struct IntegrationNegativeTests {
     @Test @MainActor
-    func activeTimerPreservesConfigurationAndStateAfterInvalidActions() throws {
+    func activeTimerKeepsCapturedDurationWhenFuturePreferenceChanges() throws {
         let suiteName = "PomodoroughTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -19,9 +19,11 @@ struct IntegrationNegativeTests {
         model.clear()
 
         #expect(model.selectedPhase == .focus)
-        #expect(model.durationMinutes(for: .focus) == 25)
+        #expect(model.durationMinutes(for: .focus) == 90)
         #expect(model.canonicalTimer == timer)
+        #expect(model.canonicalTimer?.plannedDurationMs == Int64(25 * 60_000))
         #expect(model.pendingCommandCount == 2)
+        #expect(model.pendingDurationOperationCount == 1)
     }
 
     @Test @MainActor
@@ -57,6 +59,35 @@ struct IntegrationNegativeTests {
         #expect(model.history.isEmpty)
         #expect(model.pendingCommandCount == 0)
         #expect(model.durationMinutes(for: .focus) == 25)
+    }
+
+    @Test @MainActor
+    func invalidDurationAcknowledgementKeepsQueueAndPausesAutomaticSync() async throws {
+        let suiteName = "PomodoroughTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        var state = PersistedTimerState.fresh()
+        state.cachedUser = TestFixtures.user
+        state.settings.setMinutes(30, for: .focus)
+        state.pendingDurationOperations = [TestFixtures.durationOperation(
+            id: "duration-operation-pending",
+            phase: .focus,
+            durationMs: 30 * 60_000,
+            wallMs: 1
+        )]
+        defaults.set(try JSONEncoder.api.encode(state), forKey: "timer-state-v2")
+        let session = TestFixtures.session(for: "duration-invalid-ack")
+        defer { session.invalidateAndCancel() }
+        let api = APIClient(session: session, keychain: StaticTokenStore())
+        let model = AppModel(api: api, defaults: defaults, alarmScheduler: RecordingAlarmScheduler())
+
+        await model.restore()
+
+        #expect(model.pendingDurationOperationCount == 1)
+        #expect(model.durationMinutes(for: .focus) == 30)
+        #expect(model.errorMessage?.contains("Sync paused") == true)
+        #expect(model.errorMessage?.contains("1 queued changes remain") == true)
+        #expect(!model.isOffline)
     }
 
     @Test @MainActor

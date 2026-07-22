@@ -23,6 +23,116 @@ struct UnitNegativeTests {
         #expect(settings.minutes(for: .longBreak) == 180)
     }
 
+    @Test func legacyMinuteDecodingClampsBeforeIntegerConversion() throws {
+        let json = Data(
+            "{\"focusMinutes\":\(Int.max),\"shortBreakMinutes\":\(Int.min),\"longBreakMinutes\":15}".utf8
+        )
+
+        let settings = try JSONDecoder.api.decode(TimerSettings.self, from: json)
+
+        #expect(settings.durationMs(for: .focus) == DurationValues.validRange.upperBound)
+        #expect(settings.durationMs(for: .shortBreak) == DurationValues.validRange.lowerBound)
+    }
+
+    @Test func persistedMillisecondDurationsNormalizeToDisplayedMinutes() throws {
+        let json = Data(
+            #"{"focusDurationMs":90000,"shortBreakDurationMs":300000,"longBreakDurationMs":900000}"#.utf8
+        )
+
+        let settings = try JSONDecoder.api.decode(TimerSettings.self, from: json)
+
+        #expect(settings.minutes(for: .focus) == 2)
+        #expect(settings.durationMs(for: .focus) == 120_000)
+    }
+
+    @Test func canonicalAndOperationValidationRejectSubMinuteValues() {
+        let durations = DurationValues(
+            focus: 60_001,
+            shortBreak: DurationValues.defaults.shortBreak,
+            longBreak: DurationValues.defaults.longBreak
+        )
+        let operation = TestFixtures.durationOperation(
+            id: "duration-operation-subminute",
+            phase: .focus,
+            durationMs: 60_001,
+            wallMs: 1
+        )
+
+        #expect(!durations.isValid)
+        #expect(!operation.isValid)
+    }
+
+    @Test func persistedPendingDurationsRejectMalformedHLC() throws {
+        var state = PersistedTimerState.fresh()
+        state.pendingDurationOperations = [TestFixtures.durationOperation(
+            id: "duration-operation-malformed",
+            phase: .focus,
+            durationMs: 60_000,
+            wallMs: 0,
+            counter: 1
+        )]
+        let data = try JSONEncoder.api.encode(state)
+
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder.api.decode(PersistedTimerState.self, from: data)
+        }
+    }
+
+    @Test func syncResponseRequiresFixedDurationFields() {
+        let json = Data(
+            #"{"acknowledgements":[],"revision":0,"canonicalTimer":null,"history":[],"serverTime":"2026-07-21T08:00:00.000Z","serverHlcWallMs":1784620800000,"serverHlcCounter":0}"#.utf8
+        )
+
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder.api.decode(SyncResponse.self, from: json)
+        }
+    }
+
+    @Test func durationSyncRejectsDuplicateAcknowledgementsWithoutMutatingState() {
+        var state = PersistedTimerState.fresh()
+        let operation = TestFixtures.durationOperation(
+            id: "duration-operation-test",
+            phase: .focus,
+            durationMs: 30 * 60_000,
+            wallMs: 1
+        )
+        state.pendingDurationOperations = [operation]
+        state.settings.setMinutes(30, for: .focus)
+        let original = state
+        let acknowledgement = DurationAcknowledgement(
+            operationId: operation.id,
+            outcome: "applied",
+            reason: ""
+        )
+
+        #expect(throws: AppError.self) {
+            try state.applyDurationSync(
+                canonicalDurations: .defaults,
+                sentOperations: [operation],
+                acknowledgements: [acknowledgement, acknowledgement]
+            )
+        }
+        #expect(state == original)
+    }
+
+    @Test func durationSyncRejectsOutOfBoundsCanonicalValuesWithoutMutatingState() {
+        var state = PersistedTimerState.fresh()
+        let original = state
+
+        #expect(throws: AppError.self) {
+            try state.applyDurationSync(
+                canonicalDurations: DurationValues(
+                    focus: DurationValues.validRange.lowerBound - 1,
+                    shortBreak: DurationValues.defaults.shortBreak,
+                    longBreak: DurationValues.defaults.longBreak
+                ),
+                sentOperations: [],
+                acknowledgements: []
+            )
+        }
+        #expect(state == original)
+    }
+
     @Test func reducerRejectsInvalidStateTransitions() {
         let running = TestFixtures.timer(status: .running, elapsed: 5_000)
         let resume = TestFixtures.command(.resume, sequence: 2, elapsed: 10_000)

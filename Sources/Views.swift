@@ -815,7 +815,12 @@ private struct TimerControls: View {
 
     private var hasClearableTimer: Bool {
         guard let timer = model.canonicalTimer else { return false }
-        return timer.status != .running && timer.status != .paused
+        guard timer.status != .running && timer.status != .paused else { return false }
+#if os(iOS)
+        return timer.status != .cancelled
+#else
+        return true
+#endif
     }
 
     private var usesHorizontalControls: Bool {

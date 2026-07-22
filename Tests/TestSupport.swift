@@ -3,6 +3,7 @@ import Foundation
 
 enum TestFixtures {
     static let anchor = Date(timeIntervalSince1970: 1_000)
+    static let user = User(id: "user-duration-sync", email: "sync@example.com", name: "Sync", avatarUrl: "")
 
     static func timer(
         status: CanonicalTimer.Status,
@@ -66,6 +67,23 @@ enum TestFixtures {
         )
     }
 
+    static func durationOperation(
+        id: String,
+        phase: TimerPhase,
+        durationMs: Int64,
+        wallMs: Int64,
+        counter: Int64 = 0
+    ) -> DurationOperation {
+        DurationOperation(
+            id: id,
+            phase: phase,
+            durationMs: durationMs,
+            occurredAt: anchor,
+            hlcWallMs: wallMs,
+            hlcCounter: counter
+        )
+    }
+
     static func session(for scenario: String) -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [StubURLProtocol.self]
@@ -76,6 +94,19 @@ enum TestFixtures {
 
 struct EmptyTokenStore: TokenStoring {
     func load() throws -> TokenPair? { nil }
+    func save(_ tokens: TokenPair) throws {}
+    func delete() throws {}
+}
+
+struct StaticTokenStore: TokenStoring {
+    let tokens = TokenPair(
+        accessToken: "access-token",
+        accessTokenExpiresAt: Date.distantFuture,
+        refreshToken: "refresh-token",
+        refreshTokenExpiresAt: Date.distantFuture
+    )
+
+    func load() throws -> TokenPair? { tokens }
     func save(_ tokens: TokenPair) throws {}
     func delete() throws {}
 }
@@ -164,6 +195,22 @@ final class StubURLProtocol: URLProtocol {
         case "standard-date":
             statusCode = 200
             body = Data(#"{"challenge":"challenge-123","nonce":"nonce-456","expiresAt":"2026-07-20T12:34:56Z"}"#.utf8)
+        case "duration-sync" where request.url?.path == "/api/v1/me":
+            statusCode = 200
+            body = Data(#"{"user":{"id":"user-duration-sync","email":"sync@example.com","name":"Sync","avatarUrl":""},"csrfToken":"csrf"}"#.utf8)
+        case "duration-invalid-ack" where request.url?.path == "/api/v1/me":
+            statusCode = 200
+            body = Data(#"{"user":{"id":"user-duration-sync","email":"sync@example.com","name":"Sync","avatarUrl":""},"csrfToken":"csrf"}"#.utf8)
+        case "duration-sync"
+            where request.httpMethod == "POST"
+                && request.url?.path == "/api/v1/sync":
+            statusCode = 200
+            body = Data(#"{"acknowledgements":[],"taskAcknowledgements":[],"durationAcknowledgements":[],"durationsMs":{"focus":2400000,"short_break":360000,"long_break":1200000},"revision":7,"canonicalTimer":null,"history":[],"tasks":[],"serverTime":"2026-07-21T08:00:00.000Z","serverHlcWallMs":1784620800000,"serverHlcCounter":4}"#.utf8)
+        case "duration-invalid-ack"
+            where request.httpMethod == "POST"
+                && request.url?.path == "/api/v1/sync":
+            statusCode = 200
+            body = Data(#"{"acknowledgements":[],"taskAcknowledgements":[],"durationAcknowledgements":[{"operationId":"duration-operation-unexpected","outcome":"applied","reason":""}],"durationsMs":{"focus":1800000,"short_break":300000,"long_break":900000},"revision":7,"canonicalTimer":null,"history":[],"tasks":[],"serverTime":"2026-07-21T08:00:00.000Z","serverHlcWallMs":1784620800000,"serverHlcCounter":4}"#.utf8)
         case "unauthorized":
             statusCode = 401
             body = Data(#"{"error":"Unauthorized"}"#.utf8)

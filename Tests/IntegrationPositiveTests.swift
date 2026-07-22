@@ -51,6 +51,96 @@ struct IntegrationPositiveTests {
     }
 
     @Test @MainActor
+    func durationEditsClampCompactPersistAndIgnoreNoOps() throws {
+        let suiteName = "PomodoroughTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let model = AppModel(defaults: defaults, alarmScheduler: RecordingAlarmScheduler())
+
+        model.setDurationMinutes(25, for: .focus)
+        #expect(defaults.data(forKey: "timer-state-v2") == nil)
+
+        model.setDurationMinutes(1, for: .focus)
+        let firstData = try #require(defaults.data(forKey: "timer-state-v2"))
+        let firstState = try JSONDecoder.api.decode(PersistedTimerState.self, from: firstData)
+        let firstOperation = try #require(firstState.pendingDurationOperations.first)
+        model.setDurationMinutes(0, for: .focus)
+        #expect(defaults.data(forKey: "timer-state-v2") == firstData)
+
+        model.setDurationMinutes(999, for: .focus)
+        model.setDurationMinutes(10, for: .shortBreak)
+        let finalData = try #require(defaults.data(forKey: "timer-state-v2"))
+        let finalState = try JSONDecoder.api.decode(PersistedTimerState.self, from: finalData)
+        let focusOperation = try #require(finalState.pendingDurationOperations.first { $0.phase == .focus })
+
+        #expect(finalState.pendingDurationOperations.count == 2)
+        #expect(focusOperation.id != firstOperation.id)
+        #expect((focusOperation.hlcWallMs, focusOperation.hlcCounter) > (firstOperation.hlcWallMs, firstOperation.hlcCounter))
+        #expect(focusOperation.hlcWallMs > 0)
+        #expect(focusOperation.durationMs == 180 * 60_000)
+        #expect(model.durationMinutes(for: .focus) == 180)
+        #expect(model.pendingDurationOperationCount == 2)
+
+        let restored = AppModel(defaults: defaults, alarmScheduler: RecordingAlarmScheduler())
+        #expect(restored.durationMinutes(for: .focus) == 180)
+        #expect(restored.durationMinutes(for: .shortBreak) == 10)
+        #expect(restored.pendingDurationOperationCount == 2)
+    }
+
+    @Test @MainActor
+    func legacyDurationMigrationQueuesOnlyNonDefaultPhasesOnce() throws {
+        let suiteName = "PomodoroughTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let json = Data(
+            #"{"deviceId":"device-legacy","nextSequence":1,"revision":0,"pendingCommands":[],"pendingTaskOperations":[],"canonicalTimer":null,"history":[],"settings":{"selectedPhase":"long_break","focusMinutes":25,"shortBreakMinutes":7,"longBreakMinutes":30,"autoStartBreaks":true}}"#.utf8
+        )
+        defaults.set(json, forKey: "timer-state-v2")
+
+        let model = AppModel(defaults: defaults, alarmScheduler: RecordingAlarmScheduler())
+        let migratedData = try #require(defaults.data(forKey: "timer-state-v2"))
+        let migrated = try JSONDecoder.api.decode(PersistedTimerState.self, from: migratedData)
+
+        #expect(Set(migrated.pendingDurationOperations.map(\.phase)) == [.shortBreak, .longBreak])
+        #expect(migrated.pendingDurationOperations.first { $0.phase == .shortBreak }?.durationMs == Int64(7 * 60_000))
+        #expect(migrated.pendingDurationOperations.first { $0.phase == .longBreak }?.durationMs == Int64(30 * 60_000))
+        #expect(migrated.pendingDurationOperations.allSatisfy {
+            $0.hlcWallMs == 0 && $0.hlcCounter == 0 && $0.isValid
+        })
+        #expect(model.selectedPhase == .longBreak)
+        #expect(model.autoStartBreaks)
+
+        let restored = AppModel(defaults: defaults, alarmScheduler: RecordingAlarmScheduler())
+        #expect(restored.pendingDurationOperationCount == 2)
+    }
+
+    @Test @MainActor
+    func signedInPullAppliesCanonicalDurationsWithoutSyncingLocalOnlySettings() async throws {
+        let suiteName = "PomodoroughTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        var state = PersistedTimerState.fresh()
+        state.cachedUser = TestFixtures.user
+        state.settings.selectedPhase = .longBreak
+        state.settings.autoStartBreaks = true
+        defaults.set(try JSONEncoder.api.encode(state), forKey: "timer-state-v2")
+        let session = TestFixtures.session(for: "duration-sync")
+        defer { session.invalidateAndCancel() }
+        let api = APIClient(session: session, keychain: StaticTokenStore())
+        let model = AppModel(api: api, defaults: defaults, alarmScheduler: RecordingAlarmScheduler())
+
+        await model.restore()
+
+        #expect(model.sessionState == .signedIn(TestFixtures.user))
+        #expect(model.durationMinutes(for: .focus) == 40)
+        #expect(model.durationMinutes(for: .shortBreak) == 6)
+        #expect(model.durationMinutes(for: .longBreak) == 20)
+        #expect(model.selectedPhase == .longBreak)
+        #expect(model.autoStartBreaks)
+        #expect(model.pendingDurationOperationCount == 0)
+    }
+
+    @Test @MainActor
     func changingDurationClearsInactiveTimerAndUpdatesNextRun() throws {
         let suiteName = "PomodoroughTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suiteName))
@@ -377,6 +467,7 @@ struct IntegrationPositiveTests {
         #expect(state.hlcWallMs == 0)
         #expect(state.cachedUser == nil)
         #expect(state.pendingTaskOperations.isEmpty)
+        #expect(state.pendingDurationOperations.isEmpty)
         #expect(state.tasks.isEmpty)
         #expect(state.knownTasks.isEmpty)
         #expect(state.selectedTaskID == nil)

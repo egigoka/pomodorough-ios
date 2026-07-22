@@ -214,7 +214,7 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					BEFBBBD85527B968D0F33FCE = {
-						DevelopmentTeam = MH53GS72RV;
+						DevelopmentTeam = PTT6GCQ699;
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -314,7 +314,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = MH53GS72RV;
+				DEVELOPMENT_TEAM = PTT6GCQ699;
 				INFOPLIST_FILE = "Supporting/iOS-Info.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -333,7 +333,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = MH53GS72RV;
+				DEVELOPMENT_TEAM = PTT6GCQ699;
 				INFOPLIST_FILE = "Supporting/iOS-Info.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

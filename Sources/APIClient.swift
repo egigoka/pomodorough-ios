@@ -43,7 +43,11 @@ actor APIClient {
     }
 
     func sync(_ request: SyncRequest) async throws -> SyncResponse {
-        try await send("/api/v1/sync", method: "POST", body: request, authenticated: true)
+        do {
+            return try await send("/api/v1/sync", method: "POST", body: request, authenticated: true)
+        } catch is DecodingError {
+            throw AppError.invalidResponse
+        }
     }
 
     func revisionEvents() async throws -> AsyncThrowingStream<Int64, Error> {

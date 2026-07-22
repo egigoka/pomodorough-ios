@@ -90,6 +90,110 @@ struct UnitPositiveTests {
         #expect(TimerPhase.allCases.map(\.defaultMinutes) == [25, 5, 15])
     }
 
+    @Test func syncRequestEncodesExactDurationOperationContract() throws {
+        let operation = TestFixtures.durationOperation(
+            id: "duration-operation-test",
+            phase: .shortBreak,
+            durationMs: 420_000,
+            wallMs: 1_234,
+            counter: 2
+        )
+        let request = SyncRequest(
+            deviceId: "device-test",
+            lastRevision: 3,
+            commands: [],
+            taskOperations: [],
+            durationOperations: [operation]
+        )
+
+        let data = try JSONEncoder.api.encode(request)
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let operations = try #require(json["durationOperations"] as? [[String: Any]])
+        let encoded = try #require(operations.first)
+
+        #expect(Set(encoded.keys) == Set(["id", "phase", "durationMs", "occurredAt", "hlcWallMs", "hlcCounter"]))
+        #expect(encoded["id"] as? String == operation.id)
+        #expect(encoded["phase"] as? String == "short_break")
+        #expect(encoded["durationMs"] as? Int == 420_000)
+        #expect(json["commands"] is [Any])
+        #expect(json["taskOperations"] is [Any])
+    }
+
+    @Test func syncResponseDecodesFixedDurationContract() throws {
+        let json = Data(
+            #"{"acknowledgements":[],"durationAcknowledgements":[{"operationId":"duration-operation-test","outcome":"applied","reason":""}],"durationsMs":{"focus":1500000,"short_break":300000,"long_break":900000},"revision":0,"canonicalTimer":null,"history":[],"serverTime":"2026-07-21T08:00:00.000Z","serverHlcWallMs":1784620800000,"serverHlcCounter":7}"#.utf8
+        )
+
+        let response = try JSONDecoder.api.decode(SyncResponse.self, from: json)
+
+        #expect(response.durationAcknowledgements == [DurationAcknowledgement(
+            operationId: "duration-operation-test",
+            outcome: "applied",
+            reason: ""
+        )])
+        #expect(response.durationsMs == .defaults)
+        #expect(response.serverHlcWallMs == 1_784_620_800_000)
+        #expect(response.serverHlcCounter == 7)
+    }
+
+    @Test func durationSyncReplaysNewerPendingEditAfterInFlightAcknowledgement() throws {
+        var state = PersistedTimerState.fresh()
+        state.settings.selectedPhase = .longBreak
+        state.settings.autoStartBreaks = true
+        let sent = TestFixtures.durationOperation(
+            id: "duration-operation-sent",
+            phase: .focus,
+            durationMs: 30 * 60_000,
+            wallMs: 1
+        )
+        let newer = TestFixtures.durationOperation(
+            id: "duration-operation-newer",
+            phase: .focus,
+            durationMs: 45 * 60_000,
+            wallMs: 2
+        )
+        state.pendingDurationOperations = [newer]
+        state.settings.setMinutes(45, for: .focus)
+
+        try state.applyDurationSync(
+            canonicalDurations: DurationValues(
+                focus: sent.durationMs,
+                shortBreak: 8 * 60_000,
+                longBreak: 20 * 60_000
+            ),
+            sentOperations: [sent],
+            acknowledgements: [DurationAcknowledgement(
+                operationId: sent.id,
+                outcome: "applied",
+                reason: ""
+            )]
+        )
+
+        #expect(state.pendingDurationOperations == [newer])
+        #expect(state.settings.durationMs(for: .focus) == newer.durationMs)
+        #expect(state.settings.durationMs(for: .shortBreak) == 8 * 60_000)
+        #expect(state.settings.durationMs(for: .longBreak) == 20 * 60_000)
+        #expect(state.settings.selectedPhase == .longBreak)
+        #expect(state.settings.autoStartBreaks)
+    }
+
+    @Test func legacyDurationBootstrapUsesSentinelWithoutAdvancingClock() {
+        var state = PersistedTimerState.fresh()
+        state.hlcWallMs = 123_456
+        state.hlcCounter = 7
+        state.settings.setMinutes(30, for: .focus)
+        state.settings.setMinutes(20, for: .longBreak)
+
+        state.migrateLegacyDurationSettings(at: TestFixtures.anchor)
+
+        #expect(state.hlcWallMs == 123_456)
+        #expect(state.hlcCounter == 7)
+        #expect(state.pendingDurationOperations.count == 2)
+        #expect(state.pendingDurationOperations.allSatisfy {
+            $0.hlcWallMs == 0 && $0.hlcCounter == 0 && $0.isValid
+        })
+    }
+
     @Test func historyUsesBestDateAndRoundsMinutesUp() {
         let completed = HistoryItem(
             id: "history-completed",
@@ -145,10 +249,12 @@ struct UnitPositiveTests {
         #expect(try #require(result.history.first).taskId == taskID)
     }
 
-    @Test func accountChangeKeepsDevicePreferences() {
+    @Test func accountChangeKeepsLocalPreferencesAndResetsSyncedDurations() {
         var state = PersistedTimerState.fresh()
         let deviceID = state.deviceId
         state.settings.focusMinutes = 42
+        state.settings.selectedPhase = .longBreak
+        state.settings.autoStartBreaks = true
         state.cachedUser = User(id: String(repeating: "a", count: 32), email: "a@example.com", name: "A", avatarUrl: "")
         state.pendingCommands = [TestFixtures.command(.start, sequence: 1, elapsed: 0)]
         state.pendingTaskOperations = [TaskOperation(
@@ -160,16 +266,25 @@ struct UnitPositiveTests {
             hlcWallMs: 1,
             hlcCounter: 0
         )]
+        state.pendingDurationOperations = [TestFixtures.durationOperation(
+            id: "duration-operation-test",
+            phase: .focus,
+            durationMs: 42 * 60_000,
+            wallMs: 2
+        )]
         state.canonicalTimer = TestFixtures.timer(status: .running, elapsed: 0)
         let newUser = User(id: String(repeating: "b", count: 32), email: "b@example.com", name: "B", avatarUrl: "")
 
         state.prepare(for: newUser)
 
         #expect(state.deviceId == deviceID)
-        #expect(state.settings.focusMinutes == 42)
+        #expect(state.settings.durationsMs == .defaults)
+        #expect(state.settings.selectedPhase == .longBreak)
+        #expect(state.settings.autoStartBreaks)
         #expect(state.cachedUser == newUser)
         #expect(state.pendingCommands.isEmpty)
         #expect(state.pendingTaskOperations.isEmpty)
+        #expect(state.pendingDurationOperations.isEmpty)
         #expect(state.canonicalTimer == nil)
     }
 
