@@ -8,13 +8,18 @@
 
 /* Begin PBXBuildFile section */
 		05ADF2030E5861781198DA1B /* UnitPositiveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDC54AA96E93B5ABA535D695 /* UnitPositiveTests.swift */; };
+		0F89BCC2C85246CC18C3A30B /* TestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DDB19D3B83EA6B9769F9D5E /* TestSupport.swift */; };
 		25D823E92068B5ED728F0BA2 /* UnitNegativeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB64ABDE6D1BCDDA0900CA91 /* UnitNegativeTests.swift */; };
 		2BE5CDEF3D373057F72AF294 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = 1B2F658FFCC6E497932EB5E1 /* GoogleSignIn */; };
 		3FFA600ACA6A8AA43B56AF17 /* IntegrationPositiveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D751D86A53B99D3A7671C7A /* IntegrationPositiveTests.swift */; };
+		4255112A51D66FBEC7FFA25E /* UnitNegativeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB64ABDE6D1BCDDA0900CA91 /* UnitNegativeTests.swift */; };
 		471AC410750E1BBBB89BDBDC /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF58A4FC46A48C3BEAA7E13E /* Models.swift */; };
+		4A9136A6FAC18DF7D451623B /* UnitPositiveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDC54AA96E93B5ABA535D695 /* UnitPositiveTests.swift */; };
+		586A4CA348AF502B7AC45711 /* MacOSTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D043EE67CA1960F20CF2749 /* MacOSTests.swift */; };
 		58D9FB99984C3C9DE6B8E2A5 /* PomodoroughApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDD5C1A7BCAC4E8DC9B69286 /* PomodoroughApp.swift */; };
 		5C5F3C5C652265C7C81ACB31 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D641D6CAC2F40A338AAC120 /* AppModel.swift */; };
 		6489DB8DEDA781EDD7C19DF6 /* GoogleAuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C24F7A45B3B70459A21180A /* GoogleAuthService.swift */; };
+		74715322869CD0C1BA9D19E2 /* MacOSTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D043EE67CA1960F20CF2749 /* MacOSTests.swift */; };
 		83CBB05092621687C1CD6752 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5763B6AA139E86DBCDE4D11C /* APIClient.swift */; };
 		8FCBB3E45762191D6D5DB0E0 /* TimerAlarmScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FCD013ABB0FD83204A7E89B /* TimerAlarmScheduler.swift */; };
 		94DAD594DE4C0DDB7BC40D7A /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5763B6AA139E86DBCDE4D11C /* APIClient.swift */; };
@@ -26,12 +31,14 @@
 		B07D8AF9405E6B21B227E084 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF58A4FC46A48C3BEAA7E13E /* Models.swift */; };
 		B2295D5A227E68C6503F6D36 /* PomodoroughApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDD5C1A7BCAC4E8DC9B69286 /* PomodoroughApp.swift */; };
 		C0725FE9385C24B7F5C728E8 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A07D519989D4A2F8C108C3BE /* Assets.xcassets */; };
+		C3A869CE2835EC339576D607 /* IntegrationNegativeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A9EF6C016264040BCC0B92D /* IntegrationNegativeTests.swift */; };
 		D31A942F600F2AD2BD57150D /* GoogleSignInSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 0EE041835DA15370CCB79786 /* GoogleSignInSwift */; };
 		D33FAB5D214DE97A6B1B9AC7 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D641D6CAC2F40A338AAC120 /* AppModel.swift */; };
 		D71BC324CAE1DF74369577E1 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = 7A7020DD3D1717913BB5F1D8 /* GoogleSignIn */; };
 		DE4287D68F65F02C32291ED7 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE7E580D67B2F342466E4D82 /* KeychainStore.swift */; };
 		E8586324CE793E09F7EDC876 /* TimerAlarmScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FCD013ABB0FD83204A7E89B /* TimerAlarmScheduler.swift */; };
 		F3DC0C00F8130BAE92CCC641 /* Views.swift in Sources */ = {isa = PBXBuildFile; fileRef = E58D7FE3469640FD437B5909 /* Views.swift */; };
+		F88E7A412B6A377C3346AA48 /* IntegrationPositiveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D751D86A53B99D3A7671C7A /* IntegrationPositiveTests.swift */; };
 		F96B0C5F596F1D64DE3D07D7 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE7E580D67B2F342466E4D82 /* KeychainStore.swift */; };
 /* End PBXBuildFile section */
 
@@ -43,6 +50,13 @@
 			remoteGlobalIDString = BEFBBBD85527B968D0F33FCE;
 			remoteInfo = "Pomodorough-iOS";
 		};
+		67808191FD451CF65CA983D4 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E83323A28E5C29E2DB0C0729 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 7FECCA3328608E810CEF7A7E;
+			remoteInfo = "Pomodorough-macOS";
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
@@ -51,9 +65,11 @@
 		3C24F7A45B3B70459A21180A /* GoogleAuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoogleAuthService.swift; sourceTree = "<group>"; };
 		3D641D6CAC2F40A338AAC120 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		5763B6AA139E86DBCDE4D11C /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
+		6D043EE67CA1960F20CF2749 /* MacOSTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacOSTests.swift; sourceTree = "<group>"; };
 		6DDB19D3B83EA6B9769F9D5E /* TestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TestSupport.swift; sourceTree = "<group>"; };
 		6FCD013ABB0FD83204A7E89B /* TimerAlarmScheduler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimerAlarmScheduler.swift; sourceTree = "<group>"; };
 		7A9EF6C016264040BCC0B92D /* IntegrationNegativeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntegrationNegativeTests.swift; sourceTree = "<group>"; };
+		8E424BDE1951688EFEBA81AF /* PomodoroughMacTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PomodoroughMacTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A07D519989D4A2F8C108C3BE /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A543B78D3746FBC6C1F0A98C /* Pomodorough-macOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Pomodorough-macOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		CE7E580D67B2F342466E4D82 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
@@ -107,6 +123,7 @@
 			children = (
 				7A9EF6C016264040BCC0B92D /* IntegrationNegativeTests.swift */,
 				2D751D86A53B99D3A7671C7A /* IntegrationPositiveTests.swift */,
+				6D043EE67CA1960F20CF2749 /* MacOSTests.swift */,
 				6DDB19D3B83EA6B9769F9D5E /* TestSupport.swift */,
 				DB64ABDE6D1BCDDA0900CA91 /* UnitNegativeTests.swift */,
 				DDC54AA96E93B5ABA535D695 /* UnitPositiveTests.swift */,
@@ -119,6 +136,7 @@
 			children = (
 				30BB1F81B219C5226BF0B212 /* Pomodorough-iOS.app */,
 				A543B78D3746FBC6C1F0A98C /* Pomodorough-macOS.app */,
+				8E424BDE1951688EFEBA81AF /* PomodoroughMacTests.xctest */,
 				EF4A223E38D4969E741D9514 /* PomodoroughTests.xctest */,
 			);
 			name = Products;
@@ -183,6 +201,24 @@
 			productReference = A543B78D3746FBC6C1F0A98C /* Pomodorough-macOS.app */;
 			productType = "com.apple.product-type.application";
 		};
+		A3F8EF2E3AA9DA673CA8DFEA /* PomodoroughMacTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5C6C17020B107AF7BE37243F /* Build configuration list for PBXNativeTarget "PomodoroughMacTests" */;
+			buildPhases = (
+				067B041D4D74B7A048C9538B /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				0171E81A29B6F81E01A99BAD /* PBXTargetDependency */,
+			);
+			name = PomodoroughMacTests;
+			packageProductDependencies = (
+			);
+			productName = PomodoroughMacTests;
+			productReference = 8E424BDE1951688EFEBA81AF /* PomodoroughMacTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		BEFBBBD85527B968D0F33FCE /* Pomodorough-iOS */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = A8E3D759D674B4DA616D7A6A /* Build configuration list for PBXNativeTarget "Pomodorough-iOS" */;
@@ -239,6 +275,7 @@
 				BEFBBBD85527B968D0F33FCE /* Pomodorough-iOS */,
 				7FECCA3328608E810CEF7A7E /* Pomodorough-macOS */,
 				5F94B8E83F4F59D6008D79BA /* PomodoroughTests */,
+				A3F8EF2E3AA9DA673CA8DFEA /* PomodoroughMacTests */,
 			);
 		};
 /* End PBXProject section */
@@ -255,12 +292,26 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		067B041D4D74B7A048C9538B /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C3A869CE2835EC339576D607 /* IntegrationNegativeTests.swift in Sources */,
+				F88E7A412B6A377C3346AA48 /* IntegrationPositiveTests.swift in Sources */,
+				586A4CA348AF502B7AC45711 /* MacOSTests.swift in Sources */,
+				0F89BCC2C85246CC18C3A30B /* TestSupport.swift in Sources */,
+				4255112A51D66FBEC7FFA25E /* UnitNegativeTests.swift in Sources */,
+				4A9136A6FAC18DF7D451623B /* UnitPositiveTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		2E552D39078D2DD741AEFBDA /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 				98B4B39B908271919830386D /* IntegrationNegativeTests.swift in Sources */,
 				3FFA600ACA6A8AA43B56AF17 /* IntegrationPositiveTests.swift in Sources */,
+				74715322869CD0C1BA9D19E2 /* MacOSTests.swift in Sources */,
 				A8A4A9DDE702DE6C2EB47885 /* TestSupport.swift in Sources */,
 				25D823E92068B5ED728F0BA2 /* UnitNegativeTests.swift in Sources */,
 				05ADF2030E5861781198DA1B /* UnitPositiveTests.swift in Sources */,
@@ -300,6 +351,11 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		0171E81A29B6F81E01A99BAD /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 7FECCA3328608E810CEF7A7E /* Pomodorough-macOS */;
+			targetProxy = 67808191FD451CF65CA983D4 /* PBXContainerItemProxy */;
+		};
 		38DE1F78D81D475EDF1C7950 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = BEFBBBD85527B968D0F33FCE /* Pomodorough-iOS */;
@@ -360,6 +416,23 @@
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Pomodorough.app/Pomodorough";
+			};
+			name = Debug;
+		};
+		6EB3004209AF7B6A36F4B98D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = me.egigoka.pomodorough.mac.tests;
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Pomodorough.app/Contents/MacOS/Pomodorough";
 			};
 			name = Debug;
 		};
@@ -447,6 +520,23 @@
 				SDKROOT = macosx;
 			};
 			name = Debug;
+		};
+		9BF997A66046527F3E510AA3 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = me.egigoka.pomodorough.mac.tests;
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Pomodorough.app/Contents/MacOS/Pomodorough";
+			};
+			name = Release;
 		};
 		A56E2F6E4E4DADE201095F41 /* Release */ = {
 			isa = XCBuildConfiguration;
@@ -551,6 +641,15 @@
 			buildConfigurations = (
 				43D7555DC504CB28460BD24A /* Debug */,
 				CDF05B9C9557202B0E4108A2 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		5C6C17020B107AF7BE37243F /* Build configuration list for PBXNativeTarget "PomodoroughMacTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				6EB3004209AF7B6A36F4B98D /* Debug */,
+				9BF997A66046527F3E510AA3 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

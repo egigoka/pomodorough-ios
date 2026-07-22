@@ -37,6 +37,17 @@
          </BuildableReference>
       </MacroExpansion>
       <Testables>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "A3F8EF2E3AA9DA673CA8DFEA"
+               BuildableName = "PomodoroughMacTests.xctest"
+               BlueprintName = "PomodoroughMacTests"
+               ReferencedContainer = "container:Pomodorough.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
    </TestAction>
    <LaunchAction

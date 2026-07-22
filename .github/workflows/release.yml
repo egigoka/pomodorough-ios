@@ -48,6 +48,16 @@ jobs:
           CODE_SIGNING_ALLOWED=NO
           test
 
+      - name: Test macOS
+        run: >-
+          xcodebuild
+          -project Pomodorough.xcodeproj
+          -scheme Pomodorough-macOS
+          -destination "platform=macOS"
+          -derivedDataPath "$DERIVED_DATA_PATH"
+          CODE_SIGNING_ALLOWED=NO
+          test
+
       - name: Build iOS simulator app without signing credentials
         run: >-
           xcodebuild

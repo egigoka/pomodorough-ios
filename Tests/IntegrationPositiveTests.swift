@@ -285,6 +285,7 @@ struct IntegrationPositiveTests {
         #expect(restored.syncLabel == "On device")
     }
 
+    #if os(iOS)
     @Test @MainActor
     func permissionIntroductionRequestsAccessOnceAndPersistsCompletion() async throws {
         let suiteName = "PomodoroughTests.\(UUID().uuidString)"
@@ -317,6 +318,7 @@ struct IntegrationPositiveTests {
         let restored = AppModel(defaults: defaults, alarmScheduler: RecordingAlarmScheduler())
         #expect(!restored.needsPermissionIntroduction)
     }
+    #endif
 
     @Test @MainActor
     func completedFocusAutomaticallyStartsShortBreak() throws {

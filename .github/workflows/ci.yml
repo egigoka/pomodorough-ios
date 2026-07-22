@@ -65,3 +65,13 @@ jobs:
           -derivedDataPath "$DERIVED_DATA_PATH"
           CODE_SIGNING_ALLOWED=NO
           build
+
+      - name: Test macOS
+        run: >-
+          xcodebuild
+          -project Pomodorough.xcodeproj
+          -scheme Pomodorough-macOS
+          -destination "platform=macOS"
+          -derivedDataPath "$DERIVED_DATA_PATH"
+          CODE_SIGNING_ALLOWED=NO
+          test

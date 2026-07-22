@@ -83,7 +83,7 @@ Available shared schemes:
 | Scheme | Purpose |
 | --- | --- |
 | `Pomodorough-iOS` | iPhone and iPad application plus unit/integration tests |
-| `Pomodorough-macOS` | Native Mac application |
+| `Pomodorough-macOS` | Native Mac application plus unit/integration tests |
 
 The generated project is checked in for convenience. Run `xcodegen generate`
 after changing `project.yml`.
@@ -105,6 +105,11 @@ xcodebuild -project Pomodorough.xcodeproj \
   -scheme Pomodorough-macOS \
   -configuration Debug \
   build
+
+xcodebuild -project Pomodorough.xcodeproj \
+  -scheme Pomodorough-macOS \
+  -destination 'platform=macOS' \
+  test
 ```
 
 ## Configuration

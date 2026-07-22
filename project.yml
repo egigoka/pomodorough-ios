@@ -20,6 +20,9 @@ schemes:
     build:
       targets:
         Pomodorough-macOS: all
+    test:
+      targets:
+        - PomodoroughMacTests
 settings:
   base:
     SWIFT_VERSION: 6.0
@@ -103,4 +106,16 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: me.egigoka.pomodorough.tests
         GENERATE_INFOPLIST_FILE: YES
         TEST_HOST: $(BUILT_PRODUCTS_DIR)/Pomodorough.app/Pomodorough
+        BUNDLE_LOADER: $(TEST_HOST)
+  PomodoroughMacTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources: [Tests]
+    dependencies:
+      - target: Pomodorough-macOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: me.egigoka.pomodorough.mac.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/Pomodorough.app/Contents/MacOS/Pomodorough
         BUNDLE_LOADER: $(TEST_HOST)
