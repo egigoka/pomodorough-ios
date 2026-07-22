@@ -596,6 +596,47 @@ struct IntegrationPositiveTests {
     }
 
     @Test @MainActor
+    func chooserCountsOnlyCompletedHistoryEntries() async throws {
+        let scenario = "bootstrap-history-counts"
+        let suiteName = "PomodoroughTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        var initial = try bootstrapState(hasLocalHistory: true)
+        initial.history = [
+            TestFixtures.history(
+                id: "local-cancelled",
+                status: "cancelled",
+                durationMs: 60_000,
+                date: TestFixtures.anchor
+            ),
+            TestFixtures.history(
+                id: "local-superseded",
+                status: "superseded",
+                durationMs: 60_000,
+                date: TestFixtures.anchor
+            )
+        ]
+        defaults.set(try JSONEncoder.api.encode(initial), forKey: "timer-state-v2")
+        let session = TestFixtures.session(for: scenario)
+        defer { session.invalidateAndCancel() }
+        let model = AppModel(
+            api: APIClient(session: session, keychain: StaticTokenStore()),
+            defaults: defaults,
+            alarmScheduler: RecordingAlarmScheduler()
+        )
+
+        await model.restore()
+
+        #expect(model.historyResolutionState == .choosing)
+        #expect(model.history.count == 3)
+        #expect(model.localHistoryResolutionCount == 1)
+        #expect(model.remoteHistoryResolutionCount == 1)
+        #expect(TestFixtures.recordedRequests(for: scenario).allSatisfy {
+            $0.path != "/api/v1/bootstrap/resolve" && $0.path != "/api/v1/sync"
+        })
+    }
+
+    @Test @MainActor
     func keepBothRequiresConfirmationAndInstallsMergedCanonicalHistory() async throws {
         let scenario = "bootstrap-merge"
         let suiteName = "PomodoroughTests.\(UUID().uuidString)"
@@ -712,6 +753,237 @@ struct IntegrationPositiveTests {
         #expect(model.pendingChangeCount == 0)
         #expect(model.tasks.map(\.title) == ["Remote task"])
         #expect(model.history.map(\.id) == ["remote-history"])
+    }
+
+    @Test(arguments: [BootstrapResolutionStrategy.keepRemote, .replaceRemote])
+    @MainActor
+    func chooserAppliesReplacementStrategyAfterConfirmation(
+        _ strategy: BootstrapResolutionStrategy
+    ) async throws {
+        let scenario = "bootstrap-choice-\(strategy.rawValue)"
+        let suiteName = "PomodoroughTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(
+            try JSONEncoder.api.encode(bootstrapState(hasLocalHistory: true)),
+            forKey: "timer-state-v2"
+        )
+        let session = TestFixtures.session(for: scenario)
+        defer { session.invalidateAndCancel() }
+        let model = AppModel(
+            api: APIClient(session: session, keychain: StaticTokenStore()),
+            defaults: defaults,
+            alarmScheduler: RecordingAlarmScheduler()
+        )
+
+        await model.restore()
+        #expect(model.historyResolutionState == .choosing)
+        model.requestHistoryResolution(strategy)
+        #expect(model.historyResolutionState == .confirming(strategy))
+        await model.confirmHistoryResolution()
+
+        let resolve = try #require(TestFixtures.recordedRequests(for: scenario).first {
+            $0.path == "/api/v1/bootstrap/resolve"
+        })
+        let body = try requestJSON(resolve)
+        let includesLocal = strategy == .replaceRemote
+        #expect(body["strategy"] as? String == strategy.rawValue)
+        #expect((body["commands"] as? [Any])?.count == (includesLocal ? 2 : 0))
+        #expect((body["taskOperations"] as? [Any])?.count == (includesLocal ? 1 : 0))
+        #expect((body["durationOperations"] as? [Any])?.count == (includesLocal ? 1 : 0))
+        #expect(model.history.map(\.id) == [includesLocal ? "local-history" : "remote-history"])
+        #expect(model.pendingChangeCount == 0)
+        #expect(model.historyResolutionState == .none)
+    }
+
+    @Test @MainActor
+    func taskDeleteSyncEncodesWireContractAndClearsAcknowledgement() async throws {
+        let scenario = "task-sync-delete-wire"
+        let suiteName = "PomodoroughTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let task = try #require(FocusTask(title: "Delete remotely"))
+        let operation = TaskOperation(
+            id: "task-operation-delete-wire",
+            taskId: task.id.uuidString.lowercased(),
+            type: .delete,
+            title: nil,
+            occurredAt: TestFixtures.anchor,
+            hlcWallMs: 2,
+            hlcCounter: 0
+        )
+        var state = PersistedTimerState.fresh()
+        state.cachedUser = TestFixtures.user
+        state.tasks = [task]
+        state.knownTasks = [task]
+        state.pendingTaskOperations = [operation]
+        defaults.set(try JSONEncoder.api.encode(state), forKey: "timer-state-v2")
+        let session = TestFixtures.session(for: scenario)
+        defer { session.invalidateAndCancel() }
+        let model = AppModel(
+            api: APIClient(session: session, keychain: StaticTokenStore()),
+            defaults: defaults,
+            alarmScheduler: RecordingAlarmScheduler()
+        )
+
+        await model.restore()
+
+        let sync = try #require(TestFixtures.recordedRequests(for: scenario).first { $0.path == "/api/v1/sync" })
+        let taskOperations = try #require(try requestJSON(sync)["taskOperations"] as? [[String: Any]])
+        let encoded = try #require(taskOperations.first)
+        #expect(taskOperations.count == 1)
+        #expect(encoded["id"] as? String == operation.id)
+        #expect(encoded["taskId"] as? String == operation.taskId)
+        #expect(encoded["type"] as? String == "delete")
+        #expect(encoded["title"] == nil)
+        #expect(model.tasks.isEmpty)
+        #expect(model.pendingChangeCount == 0)
+        #expect(try persistedState(defaults).pendingTaskOperations.isEmpty)
+    }
+
+    @Test @MainActor
+    func remoteTaskPullThenDeletionClearsSelectedTask() async throws {
+        let scenario = "task-sync-remote-lifecycle"
+        let suiteName = "PomodoroughTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        var state = PersistedTimerState.fresh()
+        state.cachedUser = TestFixtures.user
+        defaults.set(try JSONEncoder.api.encode(state), forKey: "timer-state-v2")
+        let session = TestFixtures.session(for: scenario)
+        defer { session.invalidateAndCancel() }
+        let model = AppModel(
+            api: APIClient(session: session, keychain: StaticTokenStore()),
+            defaults: defaults,
+            alarmScheduler: RecordingAlarmScheduler()
+        )
+
+        await model.restore()
+        let remoteTask = try #require(model.tasks.first)
+        #expect(model.tasks.map(\.title) == ["Remote task"])
+        model.selectedTaskID = remoteTask.id
+        #expect(model.selectedTaskID == remoteTask.id)
+
+        await model.sync(force: true)
+
+        #expect(model.tasks.isEmpty)
+        #expect(model.selectedTaskID == nil)
+        #expect(try persistedState(defaults).selectedTaskID == nil)
+    }
+
+    @Test @MainActor
+    func taskAddedDuringSyncRebasesOntoRemoteResponseAndClearsOnFollowUp() async throws {
+        let scenario = "task-sync-in-flight-rebase"
+        let suiteName = "PomodoroughTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        var state = PersistedTimerState.fresh()
+        state.cachedUser = TestFixtures.user
+        defaults.set(try JSONEncoder.api.encode(state), forKey: "timer-state-v2")
+        let session = TestFixtures.session(for: scenario)
+        defer { session.invalidateAndCancel() }
+        let model = AppModel(
+            api: APIClient(session: session, keychain: StaticTokenStore()),
+            defaults: defaults,
+            alarmScheduler: RecordingAlarmScheduler()
+        )
+
+        let restoreTask = Task { await model.restore() }
+        for _ in 0..<100 {
+            if TestFixtures.recordedRequests(for: scenario).contains(where: { $0.path == "/api/v1/sync" }) {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(TestFixtures.recordedRequests(for: scenario).contains { $0.path == "/api/v1/sync" })
+        #expect(model.addTask("Added in flight"))
+
+        await restoreTask.value
+
+        let syncs = TestFixtures.recordedRequests(for: scenario).filter { $0.path == "/api/v1/sync" }
+        let operationCounts = try syncs.map { request in
+            try #require(try requestJSON(request)["taskOperations"] as? [Any]).count
+        }
+        #expect(operationCounts.first == 0)
+        #expect(operationCounts.count { $0 == 1 } == 1)
+        #expect(Set(model.tasks.map(\.title)) == ["Remote task", "Added in flight"])
+        #expect(model.pendingChangeCount == 0)
+    }
+
+    @Test @MainActor
+    func taskSyncBatchesMoreThan256OperationsWithoutDroppingTasks() async throws {
+        let scenario = "task-sync-batching"
+        let suiteName = "PomodoroughTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let tasks = try (0..<257).map { index in
+            try #require(FocusTask(title: "Batch task \(index)"))
+        }
+        let operations = tasks.enumerated().map { index, task in
+            TaskOperation(
+                id: "task-operation-batch-\(index)",
+                taskId: task.id.uuidString.lowercased(),
+                type: .upsert,
+                title: task.title,
+                occurredAt: TestFixtures.anchor,
+                hlcWallMs: Int64(index + 1),
+                hlcCounter: 0
+            )
+        }
+        var state = PersistedTimerState.fresh()
+        state.cachedUser = TestFixtures.user
+        state.knownTasks = tasks
+        state.pendingTaskOperations = operations
+        defaults.set(try JSONEncoder.api.encode(state), forKey: "timer-state-v2")
+        let session = TestFixtures.session(for: scenario)
+        defer { session.invalidateAndCancel() }
+        let model = AppModel(
+            api: APIClient(session: session, keychain: StaticTokenStore()),
+            defaults: defaults,
+            alarmScheduler: RecordingAlarmScheduler()
+        )
+
+        await model.restore()
+
+        let syncs = TestFixtures.recordedRequests(for: scenario).filter { $0.path == "/api/v1/sync" }
+        let operationCounts = try syncs.map { request in
+            try #require(try requestJSON(request)["taskOperations"] as? [Any]).count
+        }
+        #expect(operationCounts == [256, 1])
+        #expect(model.tasks.count == 257)
+        #expect(Set(model.tasks) == Set(tasks))
+        #expect(model.pendingChangeCount == 0)
+    }
+
+    @Test @MainActor
+    func remoteTimerAndHistoryResolveTheirAssociatedTask() async throws {
+        let scenario = "task-sync-associations"
+        let suiteName = "PomodoroughTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        var state = PersistedTimerState.fresh()
+        state.cachedUser = TestFixtures.user
+        defaults.set(try JSONEncoder.api.encode(state), forKey: "timer-state-v2")
+        let session = TestFixtures.session(for: scenario)
+        defer { session.invalidateAndCancel() }
+        let model = AppModel(
+            api: APIClient(session: session, keychain: StaticTokenStore()),
+            defaults: defaults,
+            alarmScheduler: RecordingAlarmScheduler()
+        )
+
+        await model.restore()
+
+        let task = try #require(model.tasks.first)
+        let timer = try #require(model.canonicalTimer)
+        let history = try #require(model.history.first)
+        let historyDate = try #require(history.date)
+        #expect(model.task(forTimerID: timer.id) == task)
+        #expect(model.task(forTimerID: history.timerId) == task)
+        let summary = try #require(model.taskSummaries(for: historyDate).first)
+        #expect(summary.task == task)
+        #expect(summary.finishedPomodoros == 1)
+        #expect(summary.timeSpentMs == 1_500_000)
     }
 
     @Test @MainActor

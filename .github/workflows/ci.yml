@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      DERIVED_DATA_PATH: /tmp/PomodoroughDerivedData
+      IOS_DESTINATION: platform=iOS Simulator,name=iPhone 17
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Resolve Swift packages
+        run: >-
+          xcodebuild
+          -project Pomodorough.xcodeproj
+          -scheme Pomodorough-iOS
+          -derivedDataPath "$DERIVED_DATA_PATH"
+          -resolvePackageDependencies
+
+      - name: Test iOS
+        run: >-
+          xcodebuild
+          -project Pomodorough.xcodeproj
+          -scheme Pomodorough-iOS
+          -destination "$IOS_DESTINATION"
+          -derivedDataPath "$DERIVED_DATA_PATH"
+          CODE_SIGNING_ALLOWED=NO
+          test
+
+      - name: Build iOS
+        run: >-
+          xcodebuild
+          -project Pomodorough.xcodeproj
+          -scheme Pomodorough-iOS
+          -destination "$IOS_DESTINATION"
+          -derivedDataPath "$DERIVED_DATA_PATH"
+          CODE_SIGNING_ALLOWED=NO
+          build
+
+      - name: Build macOS
+        run: >-
+          xcodebuild
+          -project Pomodorough.xcodeproj
+          -scheme Pomodorough-macOS
+          -configuration Debug
+          -derivedDataPath "$DERIVED_DATA_PATH"
+          CODE_SIGNING_ALLOWED=NO
+          build

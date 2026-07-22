@@ -50,22 +50,32 @@ actor APIClient {
         }
     }
 
-    func bootstrap() async throws -> SyncResponse {
+    func bootstrap(_: SyncRequest) async throws -> BootstrapResponse {
         do {
-            return try await send("/api/v1/bootstrap", authenticated: true)
+            let response: BootstrapResponse = try await send(
+                "/api/v1/bootstrap",
+                authenticated: true,
+                reportsMissingRoute: true
+            )
+            return try response.validatingEmptyAcknowledgements()
+        } catch is MissingRouteError {
+            throw AppError.historyReplacementUnavailable
         } catch is DecodingError {
             throw AppError.invalidResponse
         }
     }
 
-    func resolveBootstrap(_ request: BootstrapResolveRequest) async throws -> SyncResponse {
+    func resolveBootstrap(_ request: BootstrapResolveRequest) async throws -> BootstrapResponse {
         do {
             return try await send(
                 "/api/v1/bootstrap/resolve",
                 method: "POST",
                 body: request,
-                authenticated: true
+                authenticated: true,
+                reportsMissingRoute: true
             )
+        } catch is MissingRouteError {
+            throw AppError.historyReplacementUnavailable
         } catch is DecodingError {
             throw AppError.invalidResponse
         }
@@ -160,18 +170,32 @@ actor APIClient {
     private func send<Response: Decodable>(
         _ path: String,
         method: String = "GET",
-        authenticated: Bool
+        authenticated: Bool,
+        reportsMissingRoute: Bool = false
     ) async throws -> Response {
-        try await send(path, method: method, body: Optional<String>.none, authenticated: authenticated)
+        try await send(
+            path,
+            method: method,
+            body: Optional<String>.none,
+            authenticated: authenticated,
+            reportsMissingRoute: reportsMissingRoute
+        )
     }
 
     private func send<Body: Encodable, Response: Decodable>(
         _ path: String,
         method: String = "GET",
         body: Body?,
-        authenticated: Bool
+        authenticated: Bool,
+        reportsMissingRoute: Bool = false
     ) async throws -> Response {
-        let data = try await perform(path, method: method, body: body, authenticated: authenticated)
+        let data = try await perform(
+            path,
+            method: method,
+            body: body,
+            authenticated: authenticated,
+            reportsMissingRoute: reportsMissingRoute
+        )
         return try JSONDecoder.api.decode(Response.self, from: data)
     }
 
@@ -179,7 +203,8 @@ actor APIClient {
         _ path: String,
         method: String,
         body: Body?,
-        authenticated: Bool
+        authenticated: Bool,
+        reportsMissingRoute: Bool = false
     ) async throws -> Data {
         var request = URLRequest(url: baseURL.appending(path: path))
         request.httpMethod = method
@@ -196,6 +221,7 @@ actor APIClient {
         guard let http = response as? HTTPURLResponse else { throw AppError.invalidResponse }
         guard (200..<300).contains(http.statusCode) else {
             if http.statusCode == 401 { throw AppError.unauthorized }
+            if http.statusCode == 404, reportsMissingRoute { throw MissingRouteError() }
             let message = (try? JSONDecoder.api.decode(APIError.self, from: data).error) ?? "Request failed (\(http.statusCode))."
             if http.statusCode == 409 { throw AppError.conflict(message) }
             throw AppError.server(message)
@@ -205,6 +231,18 @@ actor APIClient {
 }
 
 private struct APIError: Decodable { let error: String }
+private struct MissingRouteError: Error {}
+
+private extension BootstrapResponse {
+    func validatingEmptyAcknowledgements() throws -> Self {
+        guard acknowledgements.isEmpty,
+              taskAcknowledgements.isEmpty,
+              durationAcknowledgements.isEmpty else {
+            throw AppError.invalidResponse
+        }
+        return self
+    }
+}
 
 extension JSONDecoder {
     static var api: JSONDecoder {

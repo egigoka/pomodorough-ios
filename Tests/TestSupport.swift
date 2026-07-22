@@ -244,16 +244,30 @@ final class StubURLProtocol: URLProtocol {
         case "duration-invalid-ack" where request.url?.path == "/api/v1/me":
             statusCode = 200
             body = Data(#"{"user":{"id":"user-duration-sync","email":"sync@example.com","name":"Sync","avatarUrl":""},"csrfToken":"csrf"}"#.utf8)
+        case "bootstrap-delayed-me" where path == "/api/v1/me":
+            Thread.sleep(forTimeInterval: 0.5)
+            statusCode = 200
+            body = Self.meBody
+        case "bootstrap-reauth-different-user" where path == "/api/v1/me":
+            Thread.sleep(forTimeInterval: 0.5)
+            statusCode = 200
+            body = Self.differentUserMeBody
         case _ where Self.usesBootstrapStub(scenario) && path == "/api/v1/me":
             statusCode = 200
             body = Self.meBody
+        case "bootstrap-get-404"
+            where request.httpMethod == "GET"
+                && path == "/api/v1/bootstrap":
+            statusCode = 404
+            body = Data(#"{"error":"Not found"}"#.utf8)
         case _ where Self.usesBootstrapStub(scenario)
             && request.httpMethod == "GET"
             && path == "/api/v1/bootstrap":
             statusCode = 200
+            let history = Self.bootstrapHistory(for: scenario)
             body = Self.syncResponse(
-                revision: Self.hasRemoteBootstrapHistory(scenario) ? 8 : 5,
-                history: Self.hasRemoteBootstrapHistory(scenario) ? [Self.remoteHistory] : []
+                revision: history.isEmpty ? 5 : 8,
+                history: history
             )
         case "bootstrap-network-retry"
             where request.httpMethod == "POST"
@@ -266,20 +280,33 @@ final class StubURLProtocol: URLProtocol {
                 && path == "/api/v1/bootstrap/resolve":
             statusCode = 409
             body = Data(#"{"error":"revision conflict"}"#.utf8)
+        case "bootstrap-resolve-unauthorized"
+            where request.httpMethod == "POST"
+                && path == "/api/v1/bootstrap/resolve"
+                && pathAttempt == 1:
+            statusCode = 401
+            body = Data(#"{"error":"Unauthorized"}"#.utf8)
+        case _ where (scenario == "bootstrap-resolve-404" || scenario == "bootstrap-resolve-race-404")
+            && request.httpMethod == "POST"
+            && path == "/api/v1/bootstrap/resolve":
+            statusCode = 404
+            body = Data(#"{"error":"Not found"}"#.utf8)
         case _ where Self.usesBootstrapStub(scenario)
             && request.httpMethod == "POST"
             && path == "/api/v1/bootstrap/resolve":
             statusCode = 200
             let requestObject = Self.requestObject(requestBody)
             let strategy = requestObject?["strategy"] as? String
-            body = Self.syncResponse(
-                revision: 9,
-                history: Self.resolvedHistory(for: strategy, scenario: scenario),
-                acknowledgements: Self.acknowledgements(from: requestObject, key: "commands", idKey: "commandId"),
-                taskAcknowledgements: Self.acknowledgements(from: requestObject, key: "taskOperations", idKey: "operationId"),
-                durationAcknowledgements: Self.acknowledgements(from: requestObject, key: "durationOperations", idKey: "operationId"),
-                tasks: Self.tasks(from: requestObject)
+            body = Self.bootstrapResolveResponse(
+                scenario: scenario,
+                strategy: strategy,
+                request: requestObject
             )
+        case "bootstrap-resolve-race-404"
+            where request.httpMethod == "POST"
+                && path == "/api/v1/sync":
+            statusCode = 200
+            body = Self.syncResponse(revision: 8, history: [Self.remoteHistory])
         case _ where Self.usesBootstrapStub(scenario)
             && request.httpMethod == "POST"
             && path == "/api/v1/sync":
@@ -304,12 +331,10 @@ final class StubURLProtocol: URLProtocol {
             && request.httpMethod == "POST"
             && path == "/api/v1/sync":
             statusCode = 200
-            let requestObject = Self.requestObject(requestBody)
-            body = Self.syncResponse(
-                revision: 12,
-                history: [Self.remoteHistory],
-                taskAcknowledgements: Self.acknowledgements(from: requestObject, key: "taskOperations", idKey: "operationId"),
-                tasks: [Self.remoteTask]
+            body = Self.taskSyncResponse(
+                scenario: scenario,
+                pathAttempt: pathAttempt,
+                request: Self.requestObject(requestBody)
             )
         case "task-missing-ack" where path == "/api/v1/me":
             statusCode = 200
@@ -352,6 +377,10 @@ final class StubURLProtocol: URLProtocol {
         #"{"user":{"id":"user-duration-sync","email":"sync@example.com","name":"Sync","avatarUrl":""},"csrfToken":"csrf"}"#.utf8
     )
 
+    private static let differentUserMeBody = Data(
+        #"{"user":{"id":"different-bootstrap-user","email":"different@example.com","name":"Different","avatarUrl":""},"csrfToken":"csrf"}"#.utf8
+    )
+
     private static var localHistory: [String: Any] {
         [
             "id": "local-history",
@@ -376,10 +405,48 @@ final class StubURLProtocol: URLProtocol {
         ]
     }
 
+    private static func remoteEndedHistory(id: String, status: String) -> [String: Any] {
+        [
+            "id": id,
+            "timerId": "timer-\(id)",
+            "commandId": "command-\(id)",
+            "phase": "focus",
+            "status": status,
+            "plannedDurationMs": 1_500_000,
+            "endedAt": "2026-07-20T08:00:00.000Z"
+        ]
+    }
+
     private static var remoteTask: [String: Any] {
         [
             "id": "00000000-0000-8000-8000-000000000001",
             "title": "Remote task"
+        ]
+    }
+
+    private static var associatedTimer: [String: Any] {
+        [
+            "id": "remote-associated-timer",
+            "taskId": remoteTask["id"]!,
+            "phase": "focus",
+            "status": "running",
+            "plannedDurationMs": 1_500_000,
+            "elapsedAtAnchorMs": 120_000,
+            "anchorAt": "2026-07-21T08:00:00.000Z",
+            "lastIntent": NSNull()
+        ]
+    }
+
+    private static var associatedHistory: [String: Any] {
+        [
+            "id": "remote-associated-history",
+            "timerId": "remote-associated-history-timer",
+            "commandId": "remote-associated-command",
+            "taskId": remoteTask["id"]!,
+            "phase": "focus",
+            "status": "completed",
+            "plannedDurationMs": 1_500_000,
+            "completedAt": "2026-07-21T07:00:00.000Z"
         ]
     }
 
@@ -388,7 +455,20 @@ final class StubURLProtocol: URLProtocol {
     }
 
     private static func hasRemoteBootstrapHistory(_ scenario: String?) -> Bool {
-        scenario != "bootstrap-local-only" && scenario?.hasPrefix("bootstrap-empty-") != true
+        scenario != "bootstrap-local-only"
+            && scenario != "bootstrap-resolve-race-404"
+            && scenario?.hasPrefix("bootstrap-empty-") != true
+    }
+
+    private static func bootstrapHistory(for scenario: String?) -> [[String: Any]] {
+        if scenario == "bootstrap-history-counts" {
+            return [
+                remoteHistory,
+                remoteEndedHistory(id: "remote-cancelled", status: "cancelled"),
+                remoteEndedHistory(id: "remote-superseded", status: "superseded")
+            ]
+        }
+        return hasRemoteBootstrapHistory(scenario) ? [remoteHistory] : []
     }
 
     private static func requestObject(_ data: Data?) -> [String: Any]? {
@@ -439,6 +519,83 @@ final class StubURLProtocol: URLProtocol {
         }
     }
 
+    private static func taskSyncResponse(
+        scenario: String?,
+        pathAttempt: Int,
+        request: [String: Any]?
+    ) -> Data {
+        let taskAcknowledgements = acknowledgements(
+            from: request,
+            key: "taskOperations",
+            idKey: "operationId"
+        )
+        switch scenario {
+        case "task-sync-delete-wire":
+            return syncResponse(
+                revision: 12,
+                history: [],
+                taskAcknowledgements: taskAcknowledgements,
+                tasks: []
+            )
+        case "task-sync-remote-lifecycle":
+            return syncResponse(
+                revision: 11 + pathAttempt,
+                history: [],
+                taskAcknowledgements: taskAcknowledgements,
+                tasks: pathAttempt == 1 ? [remoteTask] : []
+            )
+        case "task-sync-in-flight-rebase":
+            if pathAttempt == 1 { Thread.sleep(forTimeInterval: 0.5) }
+            return syncResponse(
+                revision: 11 + pathAttempt,
+                history: [],
+                taskAcknowledgements: taskAcknowledgements,
+                tasks: [remoteTask] + cumulativeTasks(for: scenario)
+            )
+        case "task-sync-batching":
+            return syncResponse(
+                revision: 11 + pathAttempt,
+                history: [],
+                taskAcknowledgements: taskAcknowledgements,
+                tasks: cumulativeTasks(for: scenario)
+            )
+        case "task-sync-associations":
+            return syncResponse(
+                revision: 12,
+                history: [associatedHistory],
+                taskAcknowledgements: taskAcknowledgements,
+                tasks: [remoteTask],
+                canonicalTimer: associatedTimer
+            )
+        default:
+            return syncResponse(
+                revision: 12,
+                history: [remoteHistory],
+                taskAcknowledgements: taskAcknowledgements,
+                tasks: [remoteTask]
+            )
+        }
+    }
+
+    private static func cumulativeTasks(for scenario: String?) -> [[String: Any]] {
+        guard let scenario else { return [] }
+        var tasksByID: [String: [String: Any]] = [:]
+        for request in StubRequestRecorder.shared.requests(for: scenario) where request.path == "/api/v1/sync" {
+            let operations = requestObject(request.body)?["taskOperations"] as? [[String: Any]] ?? []
+            for operation in operations {
+                guard let id = operation["taskId"] as? String else { continue }
+                if operation["type"] as? String == "delete" {
+                    tasksByID.removeValue(forKey: id)
+                } else if let title = operation["title"] as? String {
+                    tasksByID[id] = ["id": id, "title": title]
+                }
+            }
+        }
+        return tasksByID.values.sorted {
+            ($0["id"] as? String ?? "") < ($1["id"] as? String ?? "")
+        }
+    }
+
     private static func resolvedHistory(for strategy: String?, scenario: String?) -> [[String: Any]] {
         if scenario?.hasPrefix("bootstrap-empty-") == true { return [] }
         return switch strategy {
@@ -448,15 +605,112 @@ final class StubURLProtocol: URLProtocol {
         }
     }
 
+    private static func bootstrapResolveResponse(
+        scenario: String?,
+        strategy: String?,
+        request: [String: Any]?
+    ) -> Data {
+        var response = syncResponseObject(
+            revision: 9,
+            history: resolvedHistory(for: strategy, scenario: scenario),
+            acknowledgements: acknowledgements(from: request, key: "commands", idKey: "commandId"),
+            taskAcknowledgements: acknowledgements(from: request, key: "taskOperations", idKey: "operationId"),
+            durationAcknowledgements: acknowledgements(from: request, key: "durationOperations", idKey: "operationId"),
+            tasks: tasks(from: request)
+        )
+        switch scenario {
+        case "bootstrap-response-missing-tasks":
+            response.removeValue(forKey: "tasks")
+        case "bootstrap-response-task-ack-malformed":
+            response["taskAcknowledgements"] = "invalid"
+        case "bootstrap-response-task-ack-missing":
+            response["taskAcknowledgements"] = []
+        case "bootstrap-response-task-ack-duplicate":
+            if let acknowledgement = (response["taskAcknowledgements"] as? [[String: Any]])?.first {
+                response["taskAcknowledgements"] = [acknowledgement, acknowledgement]
+            }
+        case "bootstrap-response-task-ack-extra":
+            var taskAcknowledgements = response["taskAcknowledgements"] as? [[String: Any]] ?? []
+            taskAcknowledgements.append([
+                "operationId": "task-operation-extra",
+                "outcome": "applied",
+                "reason": ""
+            ])
+            response["taskAcknowledgements"] = taskAcknowledgements
+        case "bootstrap-response-task-ack-absent":
+            response.removeValue(forKey: "taskAcknowledgements")
+        case "bootstrap-response-timer-ack-malformed":
+            response["acknowledgements"] = "invalid"
+        case "bootstrap-response-timer-ack-missing":
+            response["acknowledgements"] = []
+        case "bootstrap-response-timer-ack-duplicate":
+            if let acknowledgement = (response["acknowledgements"] as? [[String: Any]])?.first {
+                response["acknowledgements"] = [acknowledgement, acknowledgement]
+            }
+        case "bootstrap-response-timer-ack-extra":
+            var acknowledgements = response["acknowledgements"] as? [[String: Any]] ?? []
+            acknowledgements.append([
+                "commandId": "command-extra",
+                "outcome": "applied",
+                "reason": ""
+            ])
+            response["acknowledgements"] = acknowledgements
+        case "bootstrap-response-timer-ack-absent":
+            response.removeValue(forKey: "acknowledgements")
+        case "bootstrap-response-duration-ack-malformed":
+            response["durationAcknowledgements"] = "invalid"
+        case "bootstrap-response-duration-ack-missing":
+            response["durationAcknowledgements"] = []
+        case "bootstrap-response-duration-ack-duplicate":
+            if let acknowledgement = (response["durationAcknowledgements"] as? [[String: Any]])?.first {
+                response["durationAcknowledgements"] = [acknowledgement, acknowledgement]
+            }
+        case "bootstrap-response-duration-ack-extra":
+            var durationAcknowledgements = response["durationAcknowledgements"] as? [[String: Any]] ?? []
+            durationAcknowledgements.append([
+                "operationId": "duration-operation-extra",
+                "outcome": "applied",
+                "reason": ""
+            ])
+            response["durationAcknowledgements"] = durationAcknowledgements
+        case "bootstrap-response-duration-ack-absent":
+            response.removeValue(forKey: "durationAcknowledgements")
+        default:
+            break
+        }
+        return try! JSONSerialization.data(withJSONObject: response)
+    }
+
     private static func syncResponse(
         revision: Int,
         history: [[String: Any]],
         acknowledgements: [[String: Any]] = [],
         taskAcknowledgements: [[String: Any]] = [],
         durationAcknowledgements: [[String: Any]] = [],
-        tasks: [[String: Any]] = []
+        tasks: [[String: Any]] = [],
+        canonicalTimer: Any = NSNull()
     ) -> Data {
-        try! JSONSerialization.data(withJSONObject: [
+        try! JSONSerialization.data(withJSONObject: syncResponseObject(
+            revision: revision,
+            history: history,
+            acknowledgements: acknowledgements,
+            taskAcknowledgements: taskAcknowledgements,
+            durationAcknowledgements: durationAcknowledgements,
+            tasks: tasks,
+            canonicalTimer: canonicalTimer
+        ))
+    }
+
+    private static func syncResponseObject(
+        revision: Int,
+        history: [[String: Any]],
+        acknowledgements: [[String: Any]],
+        taskAcknowledgements: [[String: Any]],
+        durationAcknowledgements: [[String: Any]],
+        tasks: [[String: Any]],
+        canonicalTimer: Any = NSNull()
+    ) -> [String: Any] {
+        [
             "acknowledgements": acknowledgements,
             "taskAcknowledgements": taskAcknowledgements,
             "durationAcknowledgements": durationAcknowledgements,
@@ -466,12 +720,12 @@ final class StubURLProtocol: URLProtocol {
                 "long_break": 900_000
             ],
             "revision": revision,
-            "canonicalTimer": NSNull(),
+            "canonicalTimer": canonicalTimer,
             "history": history,
             "tasks": tasks,
             "serverTime": "2026-07-21T08:00:00.000Z",
             "serverHlcWallMs": 1_784_620_800_000,
             "serverHlcCounter": 4
-        ])
+        ]
     }
 }

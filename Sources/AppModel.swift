@@ -22,6 +22,7 @@ final class AppModel {
     private let api: APIClient
     private let defaults: UserDefaults
     private let alarmScheduler: any TimerAlarmScheduling
+    private let retryDelay: Duration
     private var timerState: PersistedTimerState
     @ObservationIgnored private var retryTask: Task<Void, Never>?
     @ObservationIgnored private var alarmOperationTask: Task<Void, Never>?
@@ -34,7 +35,7 @@ final class AppModel {
     @ObservationIgnored private var revisionHints = RevisionHintCoalescer()
     @ObservationIgnored private var completionQueuedFor: String?
     @ObservationIgnored private var sessionGeneration = 0
-    @ObservationIgnored private var bootstrapSnapshot: SyncResponse?
+    @ObservationIgnored private var bootstrapSnapshot: BootstrapResponse?
 
     private(set) var sessionState: SessionState = .restoring
     private(set) var canonicalTimer: CanonicalTimer?
@@ -53,11 +54,13 @@ final class AppModel {
     init(
         api: APIClient = APIClient(),
         defaults: UserDefaults = .standard,
-        alarmScheduler: (any TimerAlarmScheduling)? = nil
+        alarmScheduler: (any TimerAlarmScheduling)? = nil,
+        retryDelay: Duration = .seconds(5)
     ) {
         self.api = api
         self.defaults = defaults
         self.alarmScheduler = alarmScheduler ?? TimerAlarmScheduler()
+        self.retryDelay = retryDelay
         let storedData = defaults.data(forKey: Self.storageKey) ?? defaults.data(forKey: "timer-state")
         let migratedLegacyDurations: Bool
         if let data = storedData,
@@ -84,6 +87,11 @@ final class AppModel {
         needsPermissionIntroduction = !defaults.bool(forKey: Self.permissionIntroductionKey)
 #endif
         rebuildOptimisticState()
+        if let request = timerState.pendingBootstrapResolution {
+            historyResolutionState = .retryable(request.strategy)
+        } else if timerState.bootstrapUser != nil {
+            historyResolutionState = .retryable(nil)
+        }
         if migratedLegacyTasks || migratedLegacyDurations { persist() }
     }
 
@@ -143,7 +151,11 @@ final class AppModel {
     var pendingChangeCount: Int {
         pendingCommandCount + timerState.pendingTaskOperations.count + pendingDurationOperationCount
     }
-    var isHistoryResolutionBlocking: Bool { historyResolutionState != .none }
+    var isHistoryResolutionBlocking: Bool {
+        historyResolutionState != .none
+            || timerState.bootstrapUser != nil
+            || timerState.pendingBootstrapResolution != nil
+    }
     var completedFocusCount: Int { history.count { $0.status == "completed" && $0.phase == .focus } }
     var deviceMark: String { String(timerState.deviceId.suffix(4)).uppercased() }
 
@@ -322,7 +334,8 @@ final class AppModel {
 
     func signOut() {
         guard !isWorking else { return }
-        if let timer = canonicalTimer {
+        let preservesBootstrapResolution = timerState.cachedUser == nil && timerState.bootstrapUser != nil
+        if !preservesBootstrapResolution, let timer = canonicalTimer {
             cancelAlarm(timerID: timer.id)
         }
         sessionGeneration += 1
@@ -332,7 +345,9 @@ final class AppModel {
         sessionVerificationOwner = nil
         syncOwnership.invalidate()
         isSyncing = false
-        historyResolutionState = .none
+        historyResolutionState = preservesBootstrapResolution
+            ? .retryable(timerState.pendingBootstrapResolution?.strategy)
+            : .none
         bootstrapSnapshot = nil
         localHistoryResolutionCount = 0
         remoteHistoryResolutionCount = 0
@@ -342,9 +357,13 @@ final class AppModel {
         retryTask = nil
         cancelRevisionStream()
         GoogleAuthService.signOut()
-        timerState = .fresh()
-        rebuildOptimisticState()
-        persist()
+        if preservesBootstrapResolution {
+            persist()
+        } else {
+            timerState = .fresh()
+            rebuildOptimisticState()
+            persist()
+        }
 
         Task {
             defer { isWorking = false }
@@ -471,7 +490,15 @@ final class AppModel {
 
     func retryHistoryResolution() async {
         guard case .retryable = historyResolutionState else { return }
+        guard isSignedIn else {
+            signIn()
+            return
+        }
         let generation = sessionGeneration
+        guard sessionVerification.allows(generation: generation) else {
+            await verifyRestoredSession(generation: generation)
+            return
+        }
         if let request = timerState.pendingBootstrapResolution {
             await submitPersistedBootstrapResolution(request, generation: generation)
         } else {
@@ -771,6 +798,7 @@ final class AppModel {
     private func preflightBootstrapResolution(generation: Int, autoSubmits: Bool = true) async {
         guard generation == sessionGeneration,
               isSignedIn,
+              sessionVerification.allows(generation: generation),
               timerState.cachedUser == nil,
               timerState.bootstrapUser?.id == user?.id else { return }
         retryTask?.cancel()
@@ -779,13 +807,19 @@ final class AppModel {
         historyResolutionState = .preflighting
         isSyncing = false
         do {
-            let response = try await api.bootstrap()
+            let response = try await api.bootstrap(SyncRequest(
+                deviceId: timerState.deviceId,
+                lastRevision: timerState.revision,
+                commands: [],
+                taskOperations: [],
+                durationOperations: []
+            ))
             guard generation == sessionGeneration,
                   isSignedIn,
                   timerState.cachedUser == nil else { return }
             bootstrapSnapshot = response
-            localHistoryResolutionCount = history.count
-            remoteHistoryResolutionCount = response.history.count
+            localHistoryResolutionCount = Self.visibleCompletedHistoryCount(history)
+            remoteHistoryResolutionCount = Self.visibleCompletedHistoryCount(response.history)
             isOffline = false
             errorMessage = nil
 
@@ -815,6 +849,11 @@ final class AppModel {
             historyResolutionState = .retryable(nil)
             isOffline = false
             errorMessage = "History setup paused because the server returned an invalid response. Local data remains on this device."
+        } catch AppError.historyReplacementUnavailable {
+            guard generation == sessionGeneration, isSignedIn else { return }
+            historyResolutionState = .retryable(nil)
+            isOffline = false
+            errorMessage = AppError.historyReplacementUnavailable.localizedDescription
         } catch {
             guard generation == sessionGeneration, isSignedIn else { return }
             historyResolutionState = .retryable(nil)
@@ -832,9 +871,13 @@ final class AppModel {
             || !timerState.tasks.isEmpty
     }
 
+    private static func visibleCompletedHistoryCount(_ history: [HistoryItem]) -> Int {
+        history.count { $0.status == CanonicalTimer.Status.completed.rawValue }
+    }
+
     private func submitBootstrapResolution(
         strategy: BootstrapResolutionStrategy,
-        snapshot: SyncResponse
+        snapshot: BootstrapResponse
     ) async {
         guard timerState.pendingBootstrapResolution == nil else { return }
         let includesLocalOperations = strategy != .keepRemote
@@ -858,6 +901,7 @@ final class AppModel {
     ) async {
         guard generation == sessionGeneration,
               isSignedIn,
+              sessionVerification.allows(generation: generation),
               timerState.cachedUser == nil,
               timerState.bootstrapUser?.id == user?.id,
               timerState.pendingBootstrapResolution == request else { return }
@@ -893,6 +937,11 @@ final class AppModel {
             historyResolutionState = .retryable(request.strategy)
             isOffline = false
             errorMessage = "History setup paused because the server returned an invalid response. Your saved choice and local data were preserved."
+        } catch AppError.historyReplacementUnavailable {
+            guard generation == sessionGeneration, isSignedIn else { return }
+            historyResolutionState = .retryable(request.strategy)
+            isOffline = false
+            errorMessage = AppError.historyReplacementUnavailable.localizedDescription
         } catch {
             guard generation == sessionGeneration, isSignedIn else { return }
             historyResolutionState = .retryable(request.strategy)
@@ -902,7 +951,7 @@ final class AppModel {
     }
 
     private func applyBootstrapResolution(
-        _ response: SyncResponse,
+        _ response: BootstrapResponse,
         request: BootstrapResolveRequest,
         user: User
     ) throws {
@@ -910,9 +959,9 @@ final class AppModel {
         let commandAcknowledgements = response.acknowledgements.map(\.commandId)
         let taskAcknowledgements = response.taskAcknowledgements.map(\.operationId)
         let durationAcknowledgements = response.durationAcknowledgements.map(\.operationId)
-        guard Self.isAcknowledgementSubset(commandAcknowledgements, of: request.commands.map(\.id)),
-              Self.isAcknowledgementSubset(taskAcknowledgements, of: request.taskOperations.map(\.id)),
-              Self.isAcknowledgementSubset(durationAcknowledgements, of: request.durationOperations.map(\.id)) else {
+        guard AcknowledgementSet.exactlyMatches(sent: request.commands.map(\.id), acknowledged: commandAcknowledgements),
+              AcknowledgementSet.exactlyMatches(sent: request.taskOperations.map(\.id), acknowledged: taskAcknowledgements),
+              AcknowledgementSet.exactlyMatches(sent: request.durationOperations.map(\.id), acknowledged: durationAcknowledgements) else {
             throw AppError.invalidResponse
         }
         var resolved = timerState
@@ -956,11 +1005,6 @@ final class AppModel {
         persist()
     }
 
-    private static func isAcknowledgementSubset(_ acknowledged: [String], of sent: [String]) -> Bool {
-        let acknowledgedSet = Set(acknowledged)
-        return acknowledgedSet.count == acknowledged.count && acknowledgedSet.isSubset(of: Set(sent))
-    }
-
     private func verifyRestoredSession(generation: Int) async {
         guard generation == sessionGeneration,
               isSignedIn,
@@ -998,18 +1042,17 @@ final class AppModel {
         sessionVerification.invalidate()
         sessionVerificationOwner = nil
         syncOwnership.invalidate()
+        isWorking = false
         isSyncing = false
         revisionHints = RevisionHintCoalescer()
         retryTask?.cancel()
         retryTask = nil
         cancelRevisionStream()
         sessionState = .localOnly
-        if timerState.cachedUser == nil {
-            timerState.bootstrapUser = nil
-            timerState.pendingBootstrapResolution = nil
-            persist()
-        }
-        historyResolutionState = .none
+        let preservesBootstrapResolution = timerState.cachedUser == nil && timerState.bootstrapUser != nil
+        historyResolutionState = preservesBootstrapResolution
+            ? .retryable(timerState.pendingBootstrapResolution?.strategy)
+            : .none
         bootstrapSnapshot = nil
         localHistoryResolutionCount = 0
         remoteHistoryResolutionCount = 0
@@ -1020,8 +1063,9 @@ final class AppModel {
 
     private func scheduleRetry() {
         guard retryTask == nil || retryTask?.isCancelled == true else { return }
+        let retryDelay = retryDelay
         retryTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(5))
+            try? await Task.sleep(for: retryDelay)
             guard !Task.isCancelled, let self else { return }
             self.retryTask = nil
             if self.isHistoryResolutionBlocking {

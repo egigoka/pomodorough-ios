@@ -88,6 +88,44 @@ struct UnitNegativeTests {
         }
     }
 
+    @Test(
+        arguments: [
+            "acknowledgements",
+            "taskAcknowledgements",
+            "durationAcknowledgements",
+            "durationsMs",
+            "revision",
+            "canonicalTimer",
+            "history",
+            "tasks",
+            "serverTime",
+            "serverHlcWallMs",
+            "serverHlcCounter"
+        ]
+    )
+    func bootstrapResponseRequiresEveryCanonicalField(_ missingKey: String) throws {
+        let complete = Data(
+            #"{"acknowledgements":[],"taskAcknowledgements":[],"durationAcknowledgements":[],"durationsMs":{"focus":1500000,"short_break":300000,"long_break":900000},"revision":1,"canonicalTimer":null,"history":[],"tasks":[],"serverTime":"2026-07-21T08:00:00.000Z","serverHlcWallMs":1784620800000,"serverHlcCounter":0}"#.utf8
+        )
+        var object = try #require(JSONSerialization.jsonObject(with: complete) as? [String: Any])
+        object.removeValue(forKey: missingKey)
+        let incomplete = try JSONSerialization.data(withJSONObject: object)
+
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder.api.decode(BootstrapResponse.self, from: incomplete)
+        }
+    }
+
+    @Test func bootstrapResponseRejectsMalformedCanonicalTimer() throws {
+        let json = Data(
+            #"{"acknowledgements":[],"taskAcknowledgements":[],"durationAcknowledgements":[],"durationsMs":{"focus":1500000,"short_break":300000,"long_break":900000},"revision":1,"canonicalTimer":"invalid","history":[],"tasks":[],"serverTime":"2026-07-21T08:00:00.000Z","serverHlcWallMs":1784620800000,"serverHlcCounter":0}"#.utf8
+        )
+
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder.api.decode(BootstrapResponse.self, from: json)
+        }
+    }
+
     @Test func durationSyncRejectsDuplicateAcknowledgementsWithoutMutatingState() {
         var state = PersistedTimerState.fresh()
         let operation = TestFixtures.durationOperation(

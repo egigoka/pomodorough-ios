@@ -128,8 +128,9 @@ sign-in, pending operations synchronize immediately when possible and remain
 queued during network loss. SSE revision events prompt low-latency pulls for
 changes made by another client; HTTP synchronization remains authoritative.
 
-## Related repositories
+## Pomodorough projects
 
-- [Server and PWA](https://github.com/egigoka/pomodorough-server)
+- [Server (Web/PWA + sync)](https://github.com/egigoka/pomodorough-server)
+- [iOS (this project)](https://github.com/egigoka/pomodorough-ios)
 - [Android](https://github.com/egigoka/pomodorough-android)
 - [Linux](https://github.com/egigoka/pomodorough-linux)

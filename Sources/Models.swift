@@ -638,6 +638,50 @@ struct SyncResponse: Decodable, Sendable {
     }
 }
 
+struct BootstrapResponse: Decodable, Sendable {
+    let acknowledgements: [Acknowledgement]
+    let taskAcknowledgements: [TaskAcknowledgement]
+    let durationAcknowledgements: [DurationAcknowledgement]
+    let durationsMs: DurationValues
+    let revision: Int64
+    let canonicalTimer: CanonicalTimer?
+    let history: [HistoryItem]
+    let tasks: [FocusTask]
+    let serverTime: Date
+    let serverHlcWallMs: Int64
+    let serverHlcCounter: Int64
+
+    private enum CodingKeys: String, CodingKey {
+        case acknowledgements, taskAcknowledgements, durationAcknowledgements, durationsMs
+        case revision, canonicalTimer
+        case history, tasks, serverTime, serverHlcWallMs, serverHlcCounter
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        guard values.contains(.canonicalTimer) else {
+            throw DecodingError.keyNotFound(
+                CodingKeys.canonicalTimer,
+                DecodingError.Context(
+                    codingPath: values.codingPath,
+                    debugDescription: "Bootstrap response must include canonicalTimer."
+                )
+            )
+        }
+        acknowledgements = try values.decode([Acknowledgement].self, forKey: .acknowledgements)
+        taskAcknowledgements = try values.decode([TaskAcknowledgement].self, forKey: .taskAcknowledgements)
+        durationAcknowledgements = try values.decode([DurationAcknowledgement].self, forKey: .durationAcknowledgements)
+        durationsMs = try values.decode(DurationValues.self, forKey: .durationsMs)
+        revision = try values.decode(Int64.self, forKey: .revision)
+        canonicalTimer = try values.decodeIfPresent(CanonicalTimer.self, forKey: .canonicalTimer)
+        history = try values.decode([HistoryItem].self, forKey: .history)
+        tasks = try values.decode([FocusTask].self, forKey: .tasks)
+        serverTime = try values.decode(Date.self, forKey: .serverTime)
+        serverHlcWallMs = try values.decode(Int64.self, forKey: .serverHlcWallMs)
+        serverHlcCounter = try values.decode(Int64.self, forKey: .serverHlcCounter)
+    }
+}
+
 struct HistoryResponse: Decodable, Sendable { let history: [HistoryItem] }
 
 struct PersistedTimerState: Codable, Equatable, Sendable {
@@ -1056,6 +1100,7 @@ enum AppError: LocalizedError {
     case unauthorized
     case conflict(String)
     case server(String)
+    case historyReplacementUnavailable
     case invalidResponse
 
     var errorDescription: String? {
@@ -1066,6 +1111,8 @@ enum AppError: LocalizedError {
         case .unauthorized: "Session expired. Sign in again."
         case .conflict(let message): message
         case .server(let message): message
+        case .historyReplacementUnavailable:
+            "Keeping local history requires a server update. Your saved choice and local data remain on this device."
         case .invalidResponse: "Server returned an invalid response."
         }
     }
