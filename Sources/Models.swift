@@ -404,6 +404,7 @@ struct SyncRequest: Encodable, Sendable {
     let commands: [TimerCommand]
     let taskOperations: [TaskOperation]
     let durationOperations: [DurationOperation]
+    let autoStartOperations: [AutoStartOperation]?
 }
 
 enum BootstrapResolutionStrategy: String, Codable, Equatable, Sendable {
@@ -428,6 +429,7 @@ struct BootstrapResolveRequest: Codable, Equatable, Sendable {
     let commands: [TimerCommand]
     let taskOperations: [TaskOperation]
     let durationOperations: [DurationOperation]
+    let autoStartOperations: [AutoStartOperation]?
 }
 
 struct Acknowledgement: Codable, Equatable, Sendable {
@@ -477,8 +479,40 @@ struct DurationAcknowledgement: Codable, Equatable, Sendable {
     let reason: String
 }
 
+struct AutoStartOperation: Codable, Identifiable, Equatable, Sendable {
+    let id: UUID
+    let deviceId: String
+    let enabled: Bool
+    let occurredAt: Date
+    let hlcWallMs: Int64
+    let hlcCounter: Int64
+
+    var isValid: Bool {
+        !deviceId.isEmpty
+            && hlcCounter >= 0
+            && hlcWallMs > 0
+    }
+}
+
+enum AcknowledgementOutcome: String, Codable, Equatable, Sendable {
+    case applied, ignored, rejected
+}
+
+struct AutoStartAcknowledgement: Codable, Equatable, Sendable {
+    let operationId: UUID
+    let outcome: AcknowledgementOutcome
+    let reason: String
+}
+
+struct ProvisionalBreak: Codable, Equatable, Sendable {
+    let focusTimerId: String
+    let finishCommandId: String
+    let breakTimerId: String
+    let startCommandId: String
+}
+
 enum AcknowledgementSet {
-    static func exactlyMatches(sent: [String], acknowledged: [String]) -> Bool {
+    static func exactlyMatches<ID: Hashable>(sent: [ID], acknowledged: [ID]) -> Bool {
         guard sent.count == acknowledged.count else { return false }
         let sentSet = Set(sent)
         let acknowledgedSet = Set(acknowledged)
@@ -492,6 +526,7 @@ struct TimerIntent: Codable, Equatable, Sendable {
     let type: CommandType
     let commandId: String
     let occurredAt: Date
+    let deviceId: String?
 }
 
 struct CanonicalTimer: Codable, Equatable, Sendable {
@@ -607,7 +642,9 @@ struct SyncResponse: Decodable, Sendable {
     let acknowledgements: [Acknowledgement]
     let taskAcknowledgements: [TaskAcknowledgement]
     let durationAcknowledgements: [DurationAcknowledgement]
+    let autoStartAcknowledgements: [AutoStartAcknowledgement]
     let durationsMs: DurationValues
+    let autoStartBreaks: Bool
     let revision: Int64
     let canonicalTimer: CanonicalTimer?
     let history: [HistoryItem]
@@ -617,7 +654,8 @@ struct SyncResponse: Decodable, Sendable {
     let serverHlcCounter: Int64
 
     private enum CodingKeys: String, CodingKey {
-        case acknowledgements, taskAcknowledgements, durationAcknowledgements, durationsMs
+        case acknowledgements, taskAcknowledgements, durationAcknowledgements, autoStartAcknowledgements
+        case durationsMs, autoStartBreaks
         case revision, canonicalTimer
         case history, tasks, serverTime, serverHlcWallMs, serverHlcCounter
     }
@@ -627,7 +665,9 @@ struct SyncResponse: Decodable, Sendable {
         acknowledgements = try values.decode([Acknowledgement].self, forKey: .acknowledgements)
         taskAcknowledgements = try values.decodeIfPresent([TaskAcknowledgement].self, forKey: .taskAcknowledgements) ?? []
         durationAcknowledgements = try values.decode([DurationAcknowledgement].self, forKey: .durationAcknowledgements)
+        autoStartAcknowledgements = try values.decode([AutoStartAcknowledgement].self, forKey: .autoStartAcknowledgements)
         durationsMs = try values.decode(DurationValues.self, forKey: .durationsMs)
+        autoStartBreaks = try values.decode(Bool.self, forKey: .autoStartBreaks)
         revision = try values.decode(Int64.self, forKey: .revision)
         canonicalTimer = try values.decodeIfPresent(CanonicalTimer.self, forKey: .canonicalTimer)
         history = try values.decode([HistoryItem].self, forKey: .history)
@@ -642,7 +682,9 @@ struct BootstrapResponse: Decodable, Sendable {
     let acknowledgements: [Acknowledgement]
     let taskAcknowledgements: [TaskAcknowledgement]
     let durationAcknowledgements: [DurationAcknowledgement]
+    let autoStartAcknowledgements: [AutoStartAcknowledgement]
     let durationsMs: DurationValues
+    let autoStartBreaks: Bool
     let revision: Int64
     let canonicalTimer: CanonicalTimer?
     let history: [HistoryItem]
@@ -652,7 +694,8 @@ struct BootstrapResponse: Decodable, Sendable {
     let serverHlcCounter: Int64
 
     private enum CodingKeys: String, CodingKey {
-        case acknowledgements, taskAcknowledgements, durationAcknowledgements, durationsMs
+        case acknowledgements, taskAcknowledgements, durationAcknowledgements, autoStartAcknowledgements
+        case durationsMs, autoStartBreaks
         case revision, canonicalTimer
         case history, tasks, serverTime, serverHlcWallMs, serverHlcCounter
     }
@@ -671,7 +714,9 @@ struct BootstrapResponse: Decodable, Sendable {
         acknowledgements = try values.decode([Acknowledgement].self, forKey: .acknowledgements)
         taskAcknowledgements = try values.decode([TaskAcknowledgement].self, forKey: .taskAcknowledgements)
         durationAcknowledgements = try values.decode([DurationAcknowledgement].self, forKey: .durationAcknowledgements)
+        autoStartAcknowledgements = try values.decode([AutoStartAcknowledgement].self, forKey: .autoStartAcknowledgements)
         durationsMs = try values.decode(DurationValues.self, forKey: .durationsMs)
+        autoStartBreaks = try values.decode(Bool.self, forKey: .autoStartBreaks)
         revision = try values.decode(Int64.self, forKey: .revision)
         canonicalTimer = try values.decodeIfPresent(CanonicalTimer.self, forKey: .canonicalTimer)
         history = try values.decode([HistoryItem].self, forKey: .history)
@@ -684,6 +729,14 @@ struct BootstrapResponse: Decodable, Sendable {
 
 struct HistoryResponse: Decodable, Sendable { let history: [HistoryItem] }
 
+private struct LossyDecodable<Value: Decodable>: Decodable {
+    let value: Value?
+
+    init(from decoder: Decoder) {
+        value = try? Value(from: decoder)
+    }
+}
+
 struct PersistedTimerState: Codable, Equatable, Sendable {
     var deviceId: String
     var nextSequence: Int64
@@ -693,6 +746,10 @@ struct PersistedTimerState: Codable, Equatable, Sendable {
     var pendingCommands: [TimerCommand]
     var pendingTaskOperations: [TaskOperation]
     var pendingDurationOperations: [DurationOperation]
+    var pendingAutoStartOperations: [AutoStartOperation]
+    var autoStartBreaks: Bool
+    var localTimerOwners: [String: String]
+    var provisionalBreaks: [ProvisionalBreak]
     var canonicalTimer: CanonicalTimer?
     var history: [HistoryItem]
     var tasks: [FocusTask]
@@ -714,6 +771,10 @@ struct PersistedTimerState: Codable, Equatable, Sendable {
             pendingCommands: [],
             pendingTaskOperations: [],
             pendingDurationOperations: [],
+            pendingAutoStartOperations: [],
+            autoStartBreaks: false,
+            localTimerOwners: [:],
+            provisionalBreaks: [],
             canonicalTimer: nil,
             history: [],
             tasks: [],
@@ -731,11 +792,9 @@ struct PersistedTimerState: Codable, Equatable, Sendable {
         if let previousUser = cachedUser, previousUser.id != authenticatedUser.id {
             let existingDeviceID = deviceId
             let existingSelectedPhase = settings.selectedPhase
-            let existingAutoStartBreaks = settings.autoStartBreaks
             self = .fresh()
             deviceId = existingDeviceID
             settings.selectedPhase = existingSelectedPhase
-            settings.autoStartBreaks = existingAutoStartBreaks
         }
         cachedUser = authenticatedUser
         bootstrapUser = nil
@@ -744,7 +803,8 @@ struct PersistedTimerState: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case deviceId, nextSequence, revision, hlcWallMs, hlcCounter
-        case pendingCommands, pendingTaskOperations, pendingDurationOperations, canonicalTimer, history
+        case pendingCommands, pendingTaskOperations, pendingDurationOperations, pendingAutoStartOperations
+        case autoStartBreaks, localTimerOwners, provisionalBreaks, canonicalTimer, history
         case tasks, knownTasks, selectedTaskID, legacyTaskAssignments, settings, cachedUser
         case bootstrapUser, pendingBootstrapResolution
     }
@@ -758,6 +818,10 @@ struct PersistedTimerState: Codable, Equatable, Sendable {
         pendingCommands: [TimerCommand],
         pendingTaskOperations: [TaskOperation],
         pendingDurationOperations: [DurationOperation],
+        pendingAutoStartOperations: [AutoStartOperation],
+        autoStartBreaks: Bool,
+        localTimerOwners: [String: String],
+        provisionalBreaks: [ProvisionalBreak],
         canonicalTimer: CanonicalTimer?,
         history: [HistoryItem],
         tasks: [FocusTask],
@@ -777,6 +841,10 @@ struct PersistedTimerState: Codable, Equatable, Sendable {
         self.pendingCommands = pendingCommands
         self.pendingTaskOperations = pendingTaskOperations
         self.pendingDurationOperations = pendingDurationOperations
+        self.pendingAutoStartOperations = pendingAutoStartOperations
+        self.autoStartBreaks = autoStartBreaks
+        self.localTimerOwners = localTimerOwners
+        self.provisionalBreaks = provisionalBreaks
         self.canonicalTimer = canonicalTimer
         self.history = history
         self.tasks = tasks
@@ -806,6 +874,25 @@ struct PersistedTimerState: Codable, Equatable, Sendable {
                 debugDescription: "Pending duration operations must use minute durations and valid HLC values."
             )
         }
+        let decodedAutoStartOperations = try values.decodeIfPresent(
+            [LossyDecodable<AutoStartOperation>].self,
+            forKey: .pendingAutoStartOperations
+        )?.compactMap(\.value) ?? []
+        let persistedDeviceId = deviceId
+        var seenAutoStartOperationIDs = Set<UUID>()
+        var validAutoStartOperations: [AutoStartOperation] = []
+        for operation in decodedAutoStartOperations where operation.isValid
+            && operation.deviceId == persistedDeviceId
+            && seenAutoStartOperationIDs.insert(operation.id).inserted {
+            validAutoStartOperations.append(operation)
+        }
+        pendingAutoStartOperations = validAutoStartOperations
+        autoStartBreaks = try values.decodeIfPresent(Bool.self, forKey: .autoStartBreaks) ?? false
+        localTimerOwners = try values.decodeIfPresent([String: String].self, forKey: .localTimerOwners) ?? [:]
+        provisionalBreaks = try values.decodeIfPresent(
+            [ProvisionalBreak].self,
+            forKey: .provisionalBreaks
+        ) ?? []
         canonicalTimer = try values.decodeIfPresent(CanonicalTimer.self, forKey: .canonicalTimer)
         history = try values.decode([HistoryItem].self, forKey: .history)
         tasks = try values.decodeIfPresent([FocusTask].self, forKey: .tasks) ?? []
@@ -911,6 +998,39 @@ struct PersistedTimerState: Codable, Equatable, Sendable {
         }
     }
 
+    @discardableResult
+    mutating func migrateLegacyAutoStartBreaks(
+        explicitlySet: Bool = false,
+        at date: Date = .now
+    ) -> Bool {
+        guard settings.autoStartBreaks || explicitlySet else { return false }
+        advanceClock(at: date)
+        pendingAutoStartOperations.append(AutoStartOperation(
+            id: UUID(),
+            deviceId: deviceId,
+            enabled: settings.autoStartBreaks,
+            occurredAt: date,
+            hlcWallMs: hlcWallMs,
+            hlcCounter: hlcCounter
+        ))
+        return true
+    }
+
+    @discardableResult
+    mutating func migrateLegacyTimerOwnership() -> Bool {
+        guard let timer = canonicalTimer,
+              timer.status == .running || timer.status == .paused,
+              localTimerOwners[timer.id] == nil,
+              !pendingCommands.contains(where: {
+                $0.type == .start && $0.timerId == timer.id
+              }),
+              let intent = timer.lastIntent,
+              intent.type == .start,
+              intent.deviceId == deviceId else { return false }
+        localTimerOwners[timer.id] = deviceId
+        return true
+    }
+
     mutating func applyDurationSync(
         canonicalDurations: DurationValues,
         sentOperations: [DurationOperation],
@@ -935,6 +1055,25 @@ struct PersistedTimerState: Codable, Equatable, Sendable {
             pendingDurationOperations,
             to: canonicalDurations
         )
+    }
+
+    mutating func applyAutoStartSync(
+        canonicalValue: Bool,
+        sentOperations: [AutoStartOperation],
+        acknowledgements: [AutoStartAcknowledgement]
+    ) throws {
+        let sentOperationIDs = sentOperations.map(\.id)
+        let acknowledgedOperationIDs = acknowledgements.map(\.operationId)
+        guard sentOperations.allSatisfy({ $0.isValid && $0.deviceId == deviceId }),
+              AcknowledgementSet.exactlyMatches(
+                sent: sentOperationIDs,
+                acknowledged: acknowledgedOperationIDs
+              ) else {
+            throw AppError.invalidResponse
+        }
+        let acknowledgedIDSet = Set(acknowledgedOperationIDs)
+        pendingAutoStartOperations.removeAll { acknowledgedIDSet.contains($0.id) }
+        autoStartBreaks = canonicalValue
     }
 
     mutating func advanceClock(at date: Date) {
@@ -993,6 +1132,21 @@ enum DurationReducer {
     }
 }
 
+enum AutoStartReducer {
+    static func applying(_ operations: [AutoStartOperation], to base: Bool) -> Bool {
+        operations.sorted(by: precedes).reduce(base) { enabled, operation in
+            operation.isValid ? operation.enabled : enabled
+        }
+    }
+
+    private static func precedes(_ lhs: AutoStartOperation, _ rhs: AutoStartOperation) -> Bool {
+        if lhs.hlcWallMs != rhs.hlcWallMs { return lhs.hlcWallMs < rhs.hlcWallMs }
+        if lhs.hlcCounter != rhs.hlcCounter { return lhs.hlcCounter < rhs.hlcCounter }
+        if lhs.deviceId != rhs.deviceId { return lhs.deviceId < rhs.deviceId }
+        return lhs.id.uuidString < rhs.id.uuidString
+    }
+}
+
 enum TimerReducer {
     static func breakPhase(afterCompletedFocusCount count: Int) -> TimerPhase {
         count > 0 && count.isMultiple(of: 4) ? .longBreak : .shortBreak
@@ -1013,7 +1167,12 @@ enum TimerReducer {
         to timer: CanonicalTimer?,
         history: [HistoryItem]
     ) -> (CanonicalTimer?, [HistoryItem]) {
-        let intent = TimerIntent(type: command.type, commandId: command.id, occurredAt: command.occurredAt)
+        let intent = TimerIntent(
+            type: command.type,
+            commandId: command.id,
+            occurredAt: command.occurredAt,
+            deviceId: nil
+        )
         switch command.type {
         case .start:
             return (

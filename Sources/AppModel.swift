@@ -63,6 +63,8 @@ final class AppModel {
         self.retryDelay = retryDelay
         let storedData = defaults.data(forKey: Self.storageKey) ?? defaults.data(forKey: "timer-state")
         let migratedLegacyDurations: Bool
+        let migratedLegacyAutoStartBreaks: Bool
+        let migratedLegacyTimerOwnership: Bool
         if let data = storedData,
            let state = try? JSONDecoder.api.decode(PersistedTimerState.self, from: data) {
             timerState = state
@@ -70,9 +72,18 @@ final class AppModel {
             if migratedLegacyDurations {
                 timerState.migrateLegacyDurationSettings()
             }
+            migratedLegacyAutoStartBreaks = !Self.hasPersistedAutoStartOperations(in: data)
+            if migratedLegacyAutoStartBreaks {
+                timerState.migrateLegacyAutoStartBreaks(
+                    explicitlySet: Self.hasExplicitLegacyAutoStartBreaks(in: data)
+                )
+            }
+            migratedLegacyTimerOwnership = timerState.migrateLegacyTimerOwnership()
         } else {
             timerState = .fresh()
             migratedLegacyDurations = false
+            migratedLegacyAutoStartBreaks = false
+            migratedLegacyTimerOwnership = false
         }
         let migratedLegacyTasks: Bool
         if let data = defaults.data(forKey: Self.localTaskStorageKey),
@@ -92,7 +103,12 @@ final class AppModel {
         } else if timerState.bootstrapUser != nil {
             historyResolutionState = .retryable(nil)
         }
-        if migratedLegacyTasks || migratedLegacyDurations { persist() }
+        if migratedLegacyTasks
+            || migratedLegacyDurations
+            || migratedLegacyAutoStartBreaks
+            || migratedLegacyTimerOwnership {
+            persist()
+        }
     }
 
     deinit {
@@ -130,11 +146,26 @@ final class AppModel {
     }
 
     var autoStartBreaks: Bool {
-        get { timerState.settings.autoStartBreaks }
+        get {
+            AutoStartReducer.applying(
+                timerState.pendingAutoStartOperations,
+                to: timerState.autoStartBreaks
+            )
+        }
         set {
-            guard !isHistoryResolutionBlocking else { return }
-            timerState.settings.autoStartBreaks = newValue
+            guard !isHistoryResolutionBlocking, newValue != autoStartBreaks else { return }
+            let now = Date.now
+            timerState.advanceClock(at: now)
+            timerState.pendingAutoStartOperations.append(AutoStartOperation(
+                id: UUID(),
+                deviceId: timerState.deviceId,
+                enabled: newValue,
+                occurredAt: now,
+                hlcWallMs: timerState.hlcWallMs,
+                hlcCounter: timerState.hlcCounter
+            ))
             persist()
+            Task { await sync() }
         }
     }
 
@@ -148,8 +179,12 @@ final class AppModel {
 
     var pendingCommandCount: Int { timerState.pendingCommands.count }
     var pendingDurationOperationCount: Int { timerState.pendingDurationOperations.count }
+    var pendingAutoStartOperationCount: Int { timerState.pendingAutoStartOperations.count }
     var pendingChangeCount: Int {
-        pendingCommandCount + timerState.pendingTaskOperations.count + pendingDurationOperationCount
+        pendingCommandCount
+            + timerState.pendingTaskOperations.count
+            + pendingDurationOperationCount
+            + pendingAutoStartOperationCount
     }
     var isHistoryResolutionBlocking: Bool {
         historyResolutionState != .none
@@ -372,11 +407,10 @@ final class AppModel {
     }
 
     func start() {
-        guard !isHistoryResolutionBlocking else { return }
+        guard !isHistoryResolutionBlocking, !isTimerActive else { return }
         let timerID = "timer-\(UUID().uuidString.lowercased())"
         let phase = selectedPhase
         let duration = TimeInterval(timerState.settings.durationMs(for: phase)) / 1_000
-        let shouldScheduleAlarm = !isTimerActive
         let taskID = phase == .focus
             ? timerState.selectedTaskID.flatMap { selected in
                 tasks.first(where: { $0.id == selected })?.id.uuidString.lowercased()
@@ -390,7 +424,6 @@ final class AppModel {
             duration: duration,
             elapsed: 0
         )
-        guard shouldScheduleAlarm else { return }
         enqueueAlarmOperation { [alarmScheduler] in
             try await alarmScheduler.schedule(timerID: timerID, phase: phase, duration: duration)
         }
@@ -398,9 +431,8 @@ final class AppModel {
 
     func pause(at date: Date = .now) {
         guard !isHistoryResolutionBlocking else { return }
-        guard let timer = canonicalTimer else { return }
+        guard let timer = canonicalTimer, timer.status == .running else { return }
         enqueue(.pause, timer: timer, elapsed: timer.elapsed(at: date))
-        guard timer.status == .running else { return }
         enqueueAlarmOperation { [alarmScheduler] in
             try alarmScheduler.pause(timerID: timer.id)
         }
@@ -408,10 +440,9 @@ final class AppModel {
 
     func resume(at date: Date = .now) {
         guard !isHistoryResolutionBlocking else { return }
-        guard let timer = canonicalTimer else { return }
+        guard let timer = canonicalTimer, timer.status == .paused else { return }
         let remainingDuration = max(1, timer.remaining(at: date))
         enqueue(.resume, timer: timer, elapsed: timer.elapsed(at: date))
-        guard timer.status == .paused else { return }
         enqueueAlarmOperation { [alarmScheduler] in
             try await alarmScheduler.resume(
                 timerID: timer.id,
@@ -428,24 +459,62 @@ final class AppModel {
 
     private func finish(at date: Date, cancelsAlarm: Bool) {
         guard !isHistoryResolutionBlocking else { return }
-        guard let timer = canonicalTimer else { return }
-        let finishedPhase = timer.phase
-        enqueue(.finish, timer: timer, elapsed: timer.elapsed(at: date))
-        if cancelsAlarm, timer.status == .running || timer.status == .paused {
+        guard let timer = canonicalTimer,
+              timer.status == .running || timer.status == .paused else { return }
+        guard timer.phase == .focus, autoStartBreaks else {
+            enqueue(.finish, timer: timer, elapsed: timer.elapsed(at: date))
+            if cancelsAlarm {
+                cancelAlarm(timerID: timer.id)
+            }
+            return
+        }
+
+        let finishCommand = appendCommand(.finish, timer: timer, elapsed: timer.elapsed(at: date))
+        let projected = TimerReducer.applying(
+            timerState.pendingCommands,
+            to: timerState.canonicalTimer,
+            history: timerState.history
+        )
+        let completedFocusCount = projected.history.count {
+            $0.status == CanonicalTimer.Status.completed.rawValue && $0.phase == .focus
+        }
+        let breakPhase = TimerReducer.breakPhase(afterCompletedFocusCount: completedFocusCount)
+        let breakTimerID = "timer-\(UUID().uuidString.lowercased())"
+        let breakDuration = TimeInterval(timerState.settings.durationMs(for: breakPhase)) / 1_000
+        timerState.settings.selectedPhase = breakPhase
+        let startCommand = appendCommand(
+            .start,
+            timerID: breakTimerID,
+            taskID: nil,
+            phase: breakPhase,
+            duration: breakDuration,
+            elapsed: 0
+        )
+        timerState.provisionalBreaks.append(ProvisionalBreak(
+            focusTimerId: timer.id,
+            finishCommandId: finishCommand.id,
+            breakTimerId: breakTimerID,
+            startCommandId: startCommand.id
+        ))
+        commitCommands()
+        if cancelsAlarm {
             cancelAlarm(timerID: timer.id)
         }
-        guard finishedPhase == .focus, autoStartBreaks else { return }
-        selectedPhase = nextBreakPhase()
-        start()
+        enqueueAlarmOperation { [alarmScheduler] in
+            try await alarmScheduler.schedule(
+                timerID: breakTimerID,
+                phase: breakPhase,
+                duration: breakDuration
+            )
+        }
     }
 
     func cancel(at date: Date = .now) {
         guard !isHistoryResolutionBlocking else { return }
-        guard let timer = canonicalTimer else { return }
+        guard let timer = canonicalTimer,
+              timer.status == .running || timer.status == .paused else { return }
         enqueue(.cancel, timer: timer, elapsed: timer.elapsed(at: date))
-        if timer.status == .running || timer.status == .paused {
-            cancelAlarm(timerID: timer.id)
-        }
+        cancelAlarm(timerID: timer.id)
     }
 
     func clear() {
@@ -461,6 +530,7 @@ final class AppModel {
               timer.id == timerID,
               timer.status == .running,
               timer.remaining(at: date) <= 0,
+              ownsAutomaticCompletion(for: timer.id),
               completionQueuedFor != timer.id else { return }
         completionQueuedFor = timer.id
         finish(at: date, cancelsAlarm: false)
@@ -517,7 +587,8 @@ final class AppModel {
         if !force,
            timerState.pendingCommands.isEmpty,
            timerState.pendingTaskOperations.isEmpty,
-           timerState.pendingDurationOperations.isEmpty { return }
+           timerState.pendingDurationOperations.isEmpty,
+           timerState.pendingAutoStartOperations.isEmpty { return }
         guard let syncID = syncOwnership.begin(generation: generation) else { return }
         var allowsFollowUpSync = true
         retryTask?.cancel()
@@ -535,17 +606,26 @@ final class AppModel {
         }
         do {
             repeat {
-                let batch = Array(timerState.pendingCommands.prefix(256))
+                let batch = uploadableCommands(limit: 256)
                 let taskBatch = Array(timerState.pendingTaskOperations.prefix(256))
                 let durationBatch = Array(timerState.pendingDurationOperations.prefix(256))
-                guard durationBatch.allSatisfy(\.isValid) else { throw AppError.invalidResponse }
+                let autoStartBatch = Array(timerState.pendingAutoStartOperations.prefix(256))
+                guard !batch.isEmpty || timerState.pendingCommands.isEmpty else {
+                    throw AppError.invalidResponse
+                }
+                guard durationBatch.allSatisfy(\.isValid),
+                      autoStartBatch.allSatisfy({
+                        $0.isValid && $0.deviceId == timerState.deviceId
+                      }) else { throw AppError.invalidResponse }
+                let previousTimer = activeTimer
                 let response = try await api.sync(
                     SyncRequest(
                         deviceId: timerState.deviceId,
                         lastRevision: timerState.revision,
                         commands: batch,
                         taskOperations: taskBatch,
-                        durationOperations: durationBatch
+                        durationOperations: durationBatch,
+                        autoStartOperations: autoStartBatch
                     )
                 )
                 guard generation == sessionGeneration, isSignedIn else { return }
@@ -560,35 +640,63 @@ final class AppModel {
                 guard AcknowledgementSet.exactlyMatches(sent: sentTaskIDs, acknowledged: acknowledgedTaskIDs) else {
                     throw AppError.invalidResponse
                 }
-                try timerState.applyDurationSync(
+                var syncedState = timerState
+                try syncedState.applyDurationSync(
                     canonicalDurations: response.durationsMs,
                     sentOperations: durationBatch,
                     acknowledgements: response.durationAcknowledgements
                 )
+                try syncedState.applyAutoStartSync(
+                    canonicalValue: response.autoStartBreaks,
+                    sentOperations: autoStartBatch,
+                    acknowledgements: response.autoStartAcknowledgements
+                )
+                resolveProvisionalBreaks(
+                    in: &syncedState,
+                    acknowledgements: response.acknowledgements,
+                    canonicalHistory: response.history,
+                    canonicalTimer: response.canonicalTimer
+                )
+                updateLocalTimerOwnership(
+                    in: &syncedState,
+                    sentCommands: batch,
+                    acknowledgements: response.acknowledgements,
+                    canonicalTimer: response.canonicalTimer,
+                    canonicalHistory: response.history
+                )
                 let acknowledgedIDSet = Set(acknowledgedIDs)
                 let acknowledgedTaskIDSet = Set(acknowledgedTaskIDs)
-                timerState.pendingCommands.removeAll { acknowledgedIDSet.contains($0.id) }
-                timerState.pendingTaskOperations.removeAll { acknowledgedTaskIDSet.contains($0.id) }
+                syncedState.pendingCommands.removeAll { acknowledgedIDSet.contains($0.id) }
+                syncedState.pendingTaskOperations.removeAll { acknowledgedTaskIDSet.contains($0.id) }
                 if let conflict = response.acknowledgements.first(where: { $0.outcome != "applied" }) {
                     conflictMessage = conflict.reason.isEmpty ? "Server resolved a timer action as \(conflict.outcome)." : conflict.reason
                 } else if let conflict = response.taskAcknowledgements.first(where: { $0.outcome != "applied" }) {
                     conflictMessage = conflict.reason.isEmpty ? "Server resolved a task change as \(conflict.outcome)." : conflict.reason
                 } else if let conflict = response.durationAcknowledgements.first(where: { $0.outcome != "applied" }) {
                     conflictMessage = conflict.reason.isEmpty ? "Server resolved a duration change as \(conflict.outcome)." : conflict.reason
+                } else if let conflict = response.autoStartAcknowledgements.first(where: { $0.outcome != .applied }) {
+                    conflictMessage = conflict.reason.isEmpty
+                        ? "Server resolved an auto-start change as \(conflict.outcome.rawValue)."
+                        : conflict.reason
                 }
-                timerState.revision = response.revision
-                timerState.canonicalTimer = response.canonicalTimer
-                timerState.history = response.history
-                timerState.tasks = response.tasks
-                timerState.mergeKnownTasks(response.tasks)
+                syncedState.revision = response.revision
+                syncedState.canonicalTimer = response.canonicalTimer
+                syncedState.migrateLegacyTimerOwnership()
+                syncedState.history = response.history
+                syncedState.tasks = response.tasks
+                syncedState.mergeKnownTasks(response.tasks)
+                timerState = syncedState
                 mergeServerClock(response.serverHlcWallMs, response.serverHlcCounter)
                 rebuildOptimisticState()
+                pruneLocalTimerOwners()
+                reconcileAlarm(from: previousTimer, to: activeTimer, at: response.serverTime)
                 isOffline = false
                 errorMessage = nil
                 persist()
             } while !timerState.pendingCommands.isEmpty
                 || !timerState.pendingTaskOperations.isEmpty
                 || !timerState.pendingDurationOperations.isEmpty
+                || !timerState.pendingAutoStartOperations.isEmpty
             startRevisionStream()
             startRemotePolling()
         } catch AppError.unauthorized {
@@ -657,6 +765,38 @@ final class AppModel {
         duration: TimeInterval,
         elapsed: TimeInterval
     ) {
+        appendCommand(
+            type,
+            timerID: timerID,
+            taskID: taskID,
+            phase: phase,
+            duration: duration,
+            elapsed: elapsed
+        )
+        commitCommands()
+    }
+
+    @discardableResult
+    private func appendCommand(_ type: CommandType, timer: CanonicalTimer, elapsed: TimeInterval) -> TimerCommand {
+        appendCommand(
+            type,
+            timerID: timer.id,
+            taskID: nil,
+            phase: timer.phase,
+            duration: timer.plannedDuration,
+            elapsed: elapsed
+        )
+    }
+
+    @discardableResult
+    private func appendCommand(
+        _ type: CommandType,
+        timerID: String,
+        taskID: String?,
+        phase: TimerPhase,
+        duration: TimeInterval,
+        elapsed: TimeInterval
+    ) -> TimerCommand {
         let now = Date.now
         timerState.advanceClock(at: now)
         let command = TimerCommand(
@@ -672,11 +812,211 @@ final class AppModel {
             hlcCounter: timerState.hlcCounter,
             observedElapsedMs: Int64(max(0, elapsed) * 1_000)
         )
-        timerState.nextSequence += 1
         timerState.pendingCommands.append(command)
+        if type == .start {
+            timerState.localTimerOwners[timerID] = timerState.deviceId
+        }
+        timerState.nextSequence += 1
+        return command
+    }
+
+    private func commitCommands() {
         rebuildOptimisticState()
         persist()
         Task { await sync() }
+    }
+
+    private func uploadableCommands(limit: Int? = nil) -> [TimerCommand] {
+        let provisionalTimerIDs = Set(timerState.provisionalBreaks.map(\.breakTimerId))
+        let commands = timerState.pendingCommands.prefix {
+            !provisionalTimerIDs.contains($0.timerId)
+        }
+        guard let limit else { return Array(commands) }
+        return Array(commands.prefix(limit))
+    }
+
+    private func ownsAutomaticCompletion(for timerID: String) -> Bool {
+        timerState.localTimerOwners[timerID] == timerState.deviceId
+            || timerState.pendingCommands.contains {
+                $0.type == .start && $0.timerId == timerID
+            }
+    }
+
+    private func pruneLocalTimerOwners() {
+        var retainedTimerIDs = Set(timerState.pendingCommands.lazy.filter {
+            $0.type == .start
+        }.map(\.timerId))
+        for provisional in timerState.provisionalBreaks {
+            retainedTimerIDs.insert(provisional.focusTimerId)
+            retainedTimerIDs.insert(provisional.breakTimerId)
+        }
+        if let activeTimer {
+            retainedTimerIDs.insert(activeTimer.id)
+        }
+        timerState.localTimerOwners = timerState.localTimerOwners.filter {
+            retainedTimerIDs.contains($0.key)
+        }
+    }
+
+    private func resolveProvisionalBreaks(
+        in state: inout PersistedTimerState,
+        acknowledgements: [Acknowledgement],
+        canonicalHistory: [HistoryItem],
+        canonicalTimer: CanonicalTimer?
+    ) {
+        let acknowledgementsByID = Dictionary(uniqueKeysWithValues: acknowledgements.map { ($0.commandId, $0) })
+        var unresolved: [ProvisionalBreak] = []
+
+        for provisional in state.provisionalBreaks {
+            guard let acknowledgement = acknowledgementsByID[provisional.finishCommandId] else {
+                unresolved.append(provisional)
+                continue
+            }
+            let canonicalFinish = canonicalHistory.contains {
+                $0.status == CanonicalTimer.Status.completed.rawValue
+                    && $0.phase == .focus
+                    && $0.commandId == provisional.finishCommandId
+            }
+            let canonicalSupersedesBreak = canonicalTimer.map {
+                ($0.status == .running || $0.status == .paused)
+                    && $0.id != provisional.focusTimerId
+                    && $0.id != provisional.breakTimerId
+            } ?? false
+            guard (acknowledgement.outcome == "applied" || canonicalFinish),
+                  !canonicalSupersedesBreak else {
+                if let startIndex = state.pendingCommands.firstIndex(where: {
+                    $0.id == provisional.startCommandId
+                }) {
+                    let dependencyEnd = state.pendingCommands[(startIndex + 1)...].firstIndex {
+                        $0.type == .start
+                    } ?? state.pendingCommands.endIndex
+                    state.pendingCommands.removeSubrange(startIndex..<dependencyEnd)
+                    state.localTimerOwners.removeValue(forKey: provisional.breakTimerId)
+                } else {
+                    state.localTimerOwners.removeValue(forKey: provisional.breakTimerId)
+                }
+                continue
+            }
+
+            let breakPhase = Self.canonicalBreakPhase(
+                for: provisional,
+                history: canonicalHistory
+            )
+            let breakDurationMs = state.settings.durationMs(for: breakPhase)
+            if let startIndex = state.pendingCommands.firstIndex(where: {
+                $0.id == provisional.startCommandId
+            }) {
+                let start = state.pendingCommands[startIndex]
+                state.pendingCommands[startIndex] = TimerCommand(
+                    id: start.id,
+                    deviceSequence: start.deviceSequence,
+                    timerId: start.timerId,
+                    taskId: start.taskId,
+                    type: start.type,
+                    phase: breakPhase,
+                    plannedDurationMs: breakDurationMs,
+                    occurredAt: start.occurredAt,
+                    hlcWallMs: start.hlcWallMs,
+                    hlcCounter: start.hlcCounter,
+                    observedElapsedMs: start.observedElapsedMs
+                )
+                state.settings.selectedPhase = breakPhase
+            }
+        }
+
+        let pendingCommandIDs = Set(state.pendingCommands.map(\.id))
+        state.provisionalBreaks = unresolved.filter {
+            pendingCommandIDs.contains($0.startCommandId)
+        }
+    }
+
+    private static func canonicalBreakPhase(
+        for provisional: ProvisionalBreak,
+        history: [HistoryItem]
+    ) -> TimerPhase {
+        let completedFocuses = history.filter {
+            $0.status == CanonicalTimer.Status.completed.rawValue && $0.phase == .focus
+        }.sorted {
+            let lhsDate = $0.completedAt ?? .distantPast
+            let rhsDate = $1.completedAt ?? .distantPast
+            if lhsDate != rhsDate { return lhsDate < rhsDate }
+            return ($0.commandId ?? "") < ($1.commandId ?? "")
+        }
+        let sourceIndex = completedFocuses.firstIndex {
+            $0.commandId == provisional.finishCommandId || $0.timerId == provisional.focusTimerId
+        }
+        return TimerReducer.breakPhase(
+            afterCompletedFocusCount: sourceIndex.map { $0 + 1 } ?? completedFocuses.count
+        )
+    }
+
+    private func updateLocalTimerOwnership(
+        in state: inout PersistedTimerState,
+        sentCommands: [TimerCommand],
+        acknowledgements: [Acknowledgement],
+        canonicalTimer: CanonicalTimer?,
+        canonicalHistory: [HistoryItem]
+    ) {
+        let acknowledgementsByID = Dictionary(uniqueKeysWithValues: acknowledgements.map { ($0.commandId, $0) })
+        for command in sentCommands where command.type == .start {
+            guard let acknowledgement = acknowledgementsByID[command.id] else { continue }
+            let canonicallyAccepted = canonicalTimer?.id == command.timerId
+                || canonicalHistory.contains { $0.timerId == command.timerId }
+            if acknowledgement.outcome == "applied" || canonicallyAccepted {
+                state.localTimerOwners[command.timerId] = state.deviceId
+            } else {
+                state.localTimerOwners.removeValue(forKey: command.timerId)
+            }
+        }
+    }
+
+    private func reconcileAlarm(
+        from previousTimer: CanonicalTimer?,
+        to currentTimer: CanonicalTimer?,
+        at date: Date
+    ) {
+        guard let previousTimer else {
+            guard let currentTimer,
+                  currentTimer.status == .running,
+                  ownsAutomaticCompletion(for: currentTimer.id) else { return }
+            enqueueAlarmOperation { [alarmScheduler] in
+                try await alarmScheduler.schedule(
+                    timerID: currentTimer.id,
+                    phase: currentTimer.phase,
+                    duration: max(1, currentTimer.remaining(at: date))
+                )
+            }
+            return
+        }
+        guard previousTimer.status == .running || previousTimer.status == .paused else { return }
+        guard let currentTimer,
+              currentTimer.id == previousTimer.id,
+              currentTimer.status == .running || currentTimer.status == .paused else {
+            cancelAlarm(timerID: previousTimer.id, reportsError: false)
+            guard let currentTimer,
+                  currentTimer.status == .running,
+                  ownsAutomaticCompletion(for: currentTimer.id) else { return }
+            enqueueAlarmOperation { [alarmScheduler] in
+                try await alarmScheduler.schedule(
+                    timerID: currentTimer.id,
+                    phase: currentTimer.phase,
+                    duration: max(1, currentTimer.remaining(at: date))
+                )
+            }
+            return
+        }
+        guard currentTimer.phase != previousTimer.phase
+                || currentTimer.plannedDurationMs != previousTimer.plannedDurationMs
+                || currentTimer.anchorAt != previousTimer.anchorAt else { return }
+        cancelAlarm(timerID: previousTimer.id, reportsError: false)
+        guard currentTimer.status == .running else { return }
+        enqueueAlarmOperation { [alarmScheduler] in
+            try await alarmScheduler.schedule(
+                timerID: currentTimer.id,
+                phase: currentTimer.phase,
+                duration: max(1, currentTimer.remaining(at: date))
+            )
+        }
     }
 
     private func enqueueTaskOperation(_ type: TaskOperationType, task: FocusTask) {
@@ -812,7 +1152,8 @@ final class AppModel {
                 lastRevision: timerState.revision,
                 commands: [],
                 taskOperations: [],
-                durationOperations: []
+                durationOperations: [],
+                autoStartOperations: []
             ))
             guard generation == sessionGeneration,
                   isSignedIn,
@@ -866,6 +1207,7 @@ final class AppModel {
         !timerState.pendingCommands.isEmpty
             || !timerState.pendingTaskOperations.isEmpty
             || !timerState.pendingDurationOperations.isEmpty
+            || !timerState.pendingAutoStartOperations.isEmpty
             || timerState.canonicalTimer != nil
             || !timerState.history.isEmpty
             || !timerState.tasks.isEmpty
@@ -886,9 +1228,12 @@ final class AppModel {
             deviceId: timerState.deviceId,
             expectedRevision: snapshot.revision,
             strategy: strategy,
-            commands: includesLocalOperations ? timerState.pendingCommands : [],
+            commands: includesLocalOperations ? uploadableCommands() : [],
             taskOperations: includesLocalOperations ? timerState.pendingTaskOperations : [],
-            durationOperations: includesLocalOperations ? timerState.pendingDurationOperations : []
+            durationOperations: includesLocalOperations ? timerState.pendingDurationOperations : [],
+            autoStartOperations: includesLocalOperations
+                ? Array(timerState.pendingAutoStartOperations.prefix(4_096))
+                : []
         )
         timerState.pendingBootstrapResolution = request
         persist()
@@ -909,6 +1254,12 @@ final class AppModel {
         retryTask = nil
         historyResolutionState = .submitting(request.strategy)
         do {
+            guard request.deviceId == timerState.deviceId,
+                  (request.autoStartOperations ?? []).allSatisfy({
+                    $0.isValid && $0.deviceId == request.deviceId
+                  }) else {
+                throw AppError.invalidResponse
+            }
             let response = try await api.resolveBootstrap(request)
             guard generation == sessionGeneration,
                   isSignedIn,
@@ -916,13 +1267,7 @@ final class AppModel {
                   let bootstrapUser = timerState.bootstrapUser else { return }
             let previousTimer = activeTimer
             try applyBootstrapResolution(response, request: request, user: bootstrapUser)
-            if let previousTimer,
-               response.canonicalTimer?.id != previousTimer.id
-                    || response.canonicalTimer?.status == .completed
-                    || response.canonicalTimer?.status == .cancelled
-                    || response.canonicalTimer?.status == .superseded {
-                cancelAlarm(timerID: previousTimer.id, reportsError: false)
-            }
+            reconcileAlarm(from: previousTimer, to: activeTimer, at: response.serverTime)
             await sync(force: true)
         } catch AppError.unauthorized {
             await invalidateUnauthorizedSession(generation: generation)
@@ -959,9 +1304,20 @@ final class AppModel {
         let commandAcknowledgements = response.acknowledgements.map(\.commandId)
         let taskAcknowledgements = response.taskAcknowledgements.map(\.operationId)
         let durationAcknowledgements = response.durationAcknowledgements.map(\.operationId)
-        guard AcknowledgementSet.exactlyMatches(sent: request.commands.map(\.id), acknowledged: commandAcknowledgements),
+        let autoStartAcknowledgements = response.autoStartAcknowledgements.map(\.operationId)
+        let requestedAutoStartOperations = request.autoStartOperations ?? []
+        guard request.deviceId == timerState.deviceId,
+              requestedAutoStartOperations.count <= 4_096,
+              requestedAutoStartOperations.allSatisfy({
+                $0.isValid && $0.deviceId == request.deviceId
+              }),
+              AcknowledgementSet.exactlyMatches(sent: request.commands.map(\.id), acknowledged: commandAcknowledgements),
               AcknowledgementSet.exactlyMatches(sent: request.taskOperations.map(\.id), acknowledged: taskAcknowledgements),
-              AcknowledgementSet.exactlyMatches(sent: request.durationOperations.map(\.id), acknowledged: durationAcknowledgements) else {
+              AcknowledgementSet.exactlyMatches(sent: request.durationOperations.map(\.id), acknowledged: durationAcknowledgements),
+              AcknowledgementSet.exactlyMatches(
+                sent: requestedAutoStartOperations.map(\.id),
+                acknowledged: autoStartAcknowledgements
+              ) else {
             throw AppError.invalidResponse
         }
         var resolved = timerState
@@ -969,6 +1325,11 @@ final class AppModel {
             resolved.pendingCommands = []
             resolved.pendingTaskOperations = []
             resolved.pendingDurationOperations = []
+            if request.autoStartOperations != nil {
+                resolved.pendingAutoStartOperations = []
+            }
+            resolved.localTimerOwners = [:]
+            resolved.provisionalBreaks = []
             resolved.knownTasks = response.tasks
             resolved.selectedTaskID = nil
             resolved.legacyTaskAssignments = [:]
@@ -976,16 +1337,37 @@ final class AppModel {
             let commandIDs = Set(commandAcknowledgements)
             let taskIDs = Set(taskAcknowledgements)
             let durationIDs = Set(durationAcknowledgements)
+            let autoStartIDs = Set(autoStartAcknowledgements)
             resolved.pendingCommands.removeAll { commandIDs.contains($0.id) }
             resolved.pendingTaskOperations.removeAll { taskIDs.contains($0.id) }
             resolved.pendingDurationOperations.removeAll { durationIDs.contains($0.id) }
+            resolved.pendingAutoStartOperations.removeAll { autoStartIDs.contains($0.id) }
+            resolved.settings.durationsMs = DurationReducer.applying(
+                resolved.pendingDurationOperations,
+                to: response.durationsMs
+            )
+            resolveProvisionalBreaks(
+                in: &resolved,
+                acknowledgements: response.acknowledgements,
+                canonicalHistory: response.history,
+                canonicalTimer: response.canonicalTimer
+            )
+            updateLocalTimerOwnership(
+                in: &resolved,
+                sentCommands: request.commands,
+                acknowledgements: response.acknowledgements,
+                canonicalTimer: response.canonicalTimer,
+                canonicalHistory: response.history
+            )
             resolved.mergeKnownTasks(response.tasks)
         }
 
         resolved.revision = response.revision
         resolved.canonicalTimer = response.canonicalTimer
+        resolved.migrateLegacyTimerOwnership()
         resolved.history = response.history
         resolved.tasks = response.tasks
+        resolved.autoStartBreaks = response.autoStartBreaks
         resolved.settings.durationsMs = DurationReducer.applying(
             resolved.pendingDurationOperations,
             to: response.durationsMs
@@ -1002,6 +1384,7 @@ final class AppModel {
         isOffline = false
         errorMessage = nil
         rebuildOptimisticState()
+        pruneLocalTimerOwners()
         persist()
     }
 
@@ -1170,6 +1553,17 @@ final class AppModel {
     private static func hasPersistedDurationOperations(in data: Data) -> Bool {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
         return object.keys.contains("pendingDurationOperations")
+    }
+
+    private static func hasPersistedAutoStartOperations(in data: Data) -> Bool {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+        return object.keys.contains("pendingAutoStartOperations")
+    }
+
+    private static func hasExplicitLegacyAutoStartBreaks(in data: Data) -> Bool {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let settings = object["settings"] as? [String: Any] else { return false }
+        return settings["autoStartBreaksExplicitlySet"] as? Bool == true
     }
 
     private static var platform: String {

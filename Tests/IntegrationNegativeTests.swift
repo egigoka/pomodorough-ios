@@ -22,7 +22,7 @@ struct IntegrationNegativeTests {
         #expect(model.durationMinutes(for: .focus) == 90)
         #expect(model.canonicalTimer == timer)
         #expect(model.canonicalTimer?.plannedDurationMs == Int64(25 * 60_000))
-        #expect(model.pendingCommandCount == 2)
+        #expect(model.pendingCommandCount == 1)
         #expect(model.pendingDurationOperationCount == 1)
     }
 
@@ -88,6 +88,66 @@ struct IntegrationNegativeTests {
         #expect(model.errorMessage?.contains("Sync paused") == true)
         #expect(model.errorMessage?.contains("1 queued changes remain") == true)
         #expect(!model.isOffline)
+    }
+
+    @Test(
+        arguments: [
+            "auto-start-ack-malformed",
+            "auto-start-ack-missing",
+            "auto-start-ack-extra",
+            "auto-start-ack-duplicate",
+            "auto-start-ack-absent"
+        ]
+    )
+    @MainActor
+    func invalidAutoStartAcknowledgementKeepsQueueAndCanonicalState(_ scenario: String) async throws {
+        let suiteName = "PomodoroughTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        var state = PersistedTimerState.fresh()
+        let operation = TestFixtures.autoStartOperation(
+            deviceID: state.deviceId,
+            enabled: true,
+            wallMs: 1
+        )
+        state.cachedUser = TestFixtures.user
+        state.pendingAutoStartOperations = [operation]
+        defaults.set(try JSONEncoder.api.encode(state), forKey: "timer-state-v2")
+        let session = TestFixtures.session(for: scenario)
+        defer { session.invalidateAndCancel() }
+        let model = AppModel(
+            api: APIClient(session: session, keychain: StaticTokenStore()),
+            defaults: defaults,
+            alarmScheduler: RecordingAlarmScheduler()
+        )
+
+        await model.restore()
+
+        #expect(model.autoStartBreaks)
+        #expect(model.pendingAutoStartOperationCount == 1)
+        #expect(model.errorMessage?.contains("Sync paused") == true)
+        #expect(!model.isOffline)
+        let persisted = try persistedState(defaults)
+        #expect(persisted.autoStartBreaks == false)
+        #expect(persisted.pendingAutoStartOperations == [operation])
+    }
+
+    @Test @MainActor
+    func disabledAutoStartLeavesCompletedFocusWithoutStartingBreak() throws {
+        let suiteName = "PomodoroughTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let model = AppModel(defaults: defaults, alarmScheduler: RecordingAlarmScheduler())
+        model.setDurationMinutes(1, for: .focus)
+        model.start()
+        let focus = try #require(model.canonicalTimer)
+
+        model.finish(at: focus.anchorAt.addingTimeInterval(60))
+
+        #expect(model.canonicalTimer?.status == .completed)
+        #expect(model.canonicalTimer?.phase == .focus)
+        #expect(model.completedFocusCount == 1)
+        #expect(model.pendingCommandCount == 2)
     }
 
     @Test @MainActor
@@ -432,7 +492,12 @@ struct IntegrationNegativeTests {
             "bootstrap-response-duration-ack-missing",
             "bootstrap-response-duration-ack-duplicate",
             "bootstrap-response-duration-ack-extra",
-            "bootstrap-response-duration-ack-absent"
+            "bootstrap-response-duration-ack-absent",
+            "bootstrap-response-auto-start-ack-malformed",
+            "bootstrap-response-auto-start-ack-missing",
+            "bootstrap-response-auto-start-ack-duplicate",
+            "bootstrap-response-auto-start-ack-extra",
+            "bootstrap-response-auto-start-ack-absent"
         ]
     )
     @MainActor
@@ -455,7 +520,7 @@ struct IntegrationNegativeTests {
 
         #expect(model.historyResolutionState == .retryable(.merge))
         #expect(model.isHistoryResolutionBlocking)
-        #expect(model.pendingChangeCount == 4)
+        #expect(model.pendingChangeCount == 5)
         #expect(try persistedState(defaults) == initial)
         let resolve = try #require(TestFixtures.recordedRequests(for: scenario).first {
             $0.path == "/api/v1/bootstrap/resolve"
@@ -543,7 +608,7 @@ struct IntegrationNegativeTests {
         #expect(!model.isOffline)
         #expect(model.errorMessage?.contains("server update") == true)
         #expect(model.history.map(\.id) == ["local-timer"])
-        #expect(model.pendingChangeCount == 4)
+        #expect(model.pendingChangeCount == 5)
         let persisted = try persistedState(defaults)
         #expect(persisted == initial)
         let requests = TestFixtures.recordedRequests(for: scenario)
@@ -610,7 +675,7 @@ struct IntegrationNegativeTests {
         #expect(!model.isOffline)
         #expect(model.errorMessage?.contains("server update") == true)
         #expect(model.history.map(\.id) == ["local-timer"])
-        #expect(model.pendingChangeCount == 4)
+        #expect(model.pendingChangeCount == 5)
         let persisted = try persistedState(defaults)
         let request = try #require(persisted.pendingBootstrapResolution)
         #expect(request.strategy == .replaceRemote)
@@ -669,6 +734,49 @@ struct IntegrationNegativeTests {
         #expect(requests.allSatisfy { $0.path != "/api/v1/bootstrap/resolve" })
     }
 
+    @Test @MainActor
+    func persistedBootstrapRejectsForeignAutoStartOperationBeforeUpload() async throws {
+        let scenario = "bootstrap-auto-start-foreign-device"
+        let suiteName = "PomodoroughTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        var state = PersistedTimerState.fresh()
+        let foreignOperation = TestFixtures.autoStartOperation(
+            deviceID: "device-foreign",
+            enabled: true,
+            wallMs: 1
+        )
+        let request = BootstrapResolveRequest(
+            requestId: "bootstrap-foreign-auto-start",
+            deviceId: state.deviceId,
+            expectedRevision: 8,
+            strategy: .merge,
+            commands: [],
+            taskOperations: [],
+            durationOperations: [],
+            autoStartOperations: [foreignOperation]
+        )
+        state.bootstrapUser = TestFixtures.user
+        state.pendingBootstrapResolution = request
+        defaults.set(try JSONEncoder.api.encode(state), forKey: "timer-state-v2")
+        let session = TestFixtures.session(for: scenario)
+        defer { session.invalidateAndCancel() }
+        let model = AppModel(
+            api: APIClient(session: session, keychain: StaticTokenStore()),
+            defaults: defaults,
+            alarmScheduler: RecordingAlarmScheduler()
+        )
+
+        await model.restore()
+
+        let requests = TestFixtures.recordedRequests(for: scenario)
+        #expect(requests.contains { $0.path == "/api/v1/me" })
+        #expect(requests.allSatisfy { $0.path != "/api/v1/bootstrap/resolve" })
+        #expect(model.historyResolutionState == .retryable(.merge))
+        #expect(model.errorMessage?.contains("invalid response") == true)
+        #expect(try persistedState(defaults).pendingBootstrapResolution == request)
+    }
+
     private func unresolvedBootstrapState() throws -> PersistedTimerState {
         var state = PersistedTimerState.fresh()
         let task = try #require(FocusTask(title: "Persisted task"))
@@ -691,10 +799,16 @@ struct IntegrationNegativeTests {
             durationMs: 30 * 60_000,
             wallMs: 3
         )]
+        let autoStartOperations = [TestFixtures.autoStartOperation(
+            deviceID: state.deviceId,
+            enabled: true,
+            wallMs: 4
+        )]
         state.bootstrapUser = TestFixtures.user
         state.pendingCommands = commands
         state.pendingTaskOperations = taskOperations
         state.pendingDurationOperations = durationOperations
+        state.pendingAutoStartOperations = autoStartOperations
         state.knownTasks = [task]
         state.settings.setMinutes(30, for: .focus)
         state.pendingBootstrapResolution = BootstrapResolveRequest(
@@ -704,7 +818,8 @@ struct IntegrationNegativeTests {
             strategy: .merge,
             commands: commands,
             taskOperations: taskOperations,
-            durationOperations: durationOperations
+            durationOperations: durationOperations,
+            autoStartOperations: autoStartOperations
         )
         return state
     }

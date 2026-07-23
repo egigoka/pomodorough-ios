@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://pomodorough.egigoka.me">Web app</a> |
-  <a href="https://github.com/egigoka/pomodorough-server">Server</a> |
+  <a href="https://github.com/Pomodoro-Everywhere/pomodorough-server">Server</a> |
   <a href="https://pomodorough.egigoka.me/openapi.yaml">API specification</a>
 </p>
 
@@ -135,7 +135,7 @@ changes made by another client; HTTP synchronization remains authoritative.
 
 ## Pomodorough projects
 
-- [Server (Web/PWA + sync)](https://github.com/egigoka/pomodorough-server)
-- [iOS (this project)](https://github.com/egigoka/pomodorough-ios)
-- [Android](https://github.com/egigoka/pomodorough-android)
-- [Linux](https://github.com/egigoka/pomodorough-linux)
+- [Server (Web/PWA + sync)](https://github.com/Pomodoro-Everywhere/pomodorough-server)
+- [Apple (this project)](https://github.com/Pomodoro-Everywhere/pomodorough-apple)
+- [Android](https://github.com/Pomodoro-Everywhere/pomodorough-android)
+- [Desktop](https://github.com/Pomodoro-Everywhere/pomodorough-desktop)

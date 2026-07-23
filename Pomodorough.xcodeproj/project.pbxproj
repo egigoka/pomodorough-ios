@@ -14,6 +14,7 @@
 		3FFA600ACA6A8AA43B56AF17 /* IntegrationPositiveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D751D86A53B99D3A7671C7A /* IntegrationPositiveTests.swift */; };
 		4255112A51D66FBEC7FFA25E /* UnitNegativeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB64ABDE6D1BCDDA0900CA91 /* UnitNegativeTests.swift */; };
 		471AC410750E1BBBB89BDBDC /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF58A4FC46A48C3BEAA7E13E /* Models.swift */; };
+		4A80E95A1D344C2EA39A4A10 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A07D519989D4A2F8C108C3BE /* Assets.xcassets */; };
 		4A9136A6FAC18DF7D451623B /* UnitPositiveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDC54AA96E93B5ABA535D695 /* UnitPositiveTests.swift */; };
 		586A4CA348AF502B7AC45711 /* MacOSTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D043EE67CA1960F20CF2749 /* MacOSTests.swift */; };
 		58D9FB99984C3C9DE6B8E2A5 /* PomodoroughApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDD5C1A7BCAC4E8DC9B69286 /* PomodoroughApp.swift */; };
@@ -186,6 +187,7 @@
 			buildConfigurationList = 5E5B56DBB87443C10DB2AC25 /* Build configuration list for PBXNativeTarget "Pomodorough-macOS" */;
 			buildPhases = (
 				848862EC2CE1E879D1D5956F /* Sources */,
+				4A80E95B1D344C2EA39A4A10 /* Resources */,
 				7C678A81D4C65EA124D25E39 /* Frameworks */,
 			);
 			buildRules = (
@@ -281,6 +283,14 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		4A80E95B1D344C2EA39A4A10 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				4A80E95A1D344C2EA39A4A10 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		8BBD8165ECACBC2803BF51D8 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -470,7 +480,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 5;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
@@ -492,7 +502,7 @@
 				GOOGLE_REVERSED_CLIENT_ID = "com.googleusercontent.apps.614768274539-7pql3pdu31c8fctsp5ekdc3v2ej8isnr";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 0.1.5;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -508,8 +518,11 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
 				CODE_SIGN_ENTITLEMENTS = "Pomodorough-macOS.entitlements";
 				COMBINE_HIDPI_IMAGES = YES;
+				DEVELOPMENT_TEAM = PTT6GCQ699;
 				INFOPLIST_FILE = "Supporting/macOS-Info.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -542,8 +555,11 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
 				CODE_SIGN_ENTITLEMENTS = "Pomodorough-macOS.entitlements";
 				COMBINE_HIDPI_IMAGES = YES;
+				DEVELOPMENT_TEAM = PTT6GCQ699;
 				INFOPLIST_FILE = "Supporting/macOS-Info.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -589,7 +605,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 5;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -605,7 +621,7 @@
 				GOOGLE_REVERSED_CLIENT_ID = "com.googleusercontent.apps.614768274539-7pql3pdu31c8fctsp5ekdc3v2ej8isnr";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 0.1.5;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";

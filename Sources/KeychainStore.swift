@@ -20,7 +20,7 @@ struct KeychainStore: TokenStoring {
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess, let data = result as? Data else {
-            throw KeychainError(status: status)
+            throw KeychainError(operation: "load", status: status)
         }
         return try JSONDecoder.api.decode(TokenPair.self, from: data)
     }
@@ -33,16 +33,18 @@ struct KeychainStore: TokenStoring {
             var query = baseQuery
             query[kSecValueData as String] = data
             let addStatus = SecItemAdd(query as CFDictionary, nil)
-            guard addStatus == errSecSuccess else { throw KeychainError(status: addStatus) }
+            guard addStatus == errSecSuccess else {
+                throw KeychainError(operation: "save (add)", status: addStatus)
+            }
         } else if status != errSecSuccess {
-            throw KeychainError(status: status)
+            throw KeychainError(operation: "save (update)", status: status)
         }
     }
 
     func delete() throws {
         let status = SecItemDelete(baseQuery as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw KeychainError(status: status)
+            throw KeychainError(operation: "delete", status: status)
         }
     }
 
@@ -57,6 +59,10 @@ struct KeychainStore: TokenStoring {
 }
 
 private struct KeychainError: LocalizedError {
+    let operation: String
     let status: OSStatus
-    var errorDescription: String? { SecCopyErrorMessageString(status, nil) as String? }
+    var errorDescription: String? {
+        let message = SecCopyErrorMessageString(status, nil) as String? ?? "Unknown error"
+        return "Keychain \(operation) failed (OSStatus \(status)): \(message)"
+    }
 }

@@ -69,6 +69,17 @@ jobs:
           CODE_SIGNING_ALLOWED=NO
           build
 
+      - name: Build iOS device app without signing credentials
+        run: >-
+          xcodebuild
+          -project Pomodorough.xcodeproj
+          -scheme Pomodorough-iOS
+          -configuration Release
+          -destination "generic/platform=iOS"
+          -derivedDataPath "$DERIVED_DATA_PATH"
+          CODE_SIGNING_ALLOWED=NO
+          build
+
       - name: Build macOS app without signing credentials
         run: >-
           xcodebuild
@@ -85,23 +96,38 @@ jobs:
         run: |
           set -euo pipefail
 
-          ios_app="$DERIVED_DATA_PATH/Build/Products/Release-iphonesimulator/Pomodorough.app"
+          ios_simulator_app="$DERIVED_DATA_PATH/Build/Products/Release-iphonesimulator/Pomodorough.app"
+          ios_device_app="$DERIVED_DATA_PATH/Build/Products/Release-iphoneos/Pomodorough.app"
           macos_app="$DERIVED_DATA_PATH/Build/Products/Release/Pomodorough.app"
-          ios_staged_app="$RUNNER_TEMP/Pomodorough-iOS-Simulator/Pomodorough.app"
+          ios_simulator_staged_app="$RUNNER_TEMP/Pomodorough-iOS-Simulator/Pomodorough.app"
+          ios_device_staging="$RUNNER_TEMP/Pomodorough-iOS-Device"
+          ios_device_staged_app="$ios_device_staging/Payload/Pomodorough.app"
           macos_staged_app="$RUNNER_TEMP/Pomodorough-macOS/Pomodorough.app"
-          ios_zip="$RELEASE_DIR/Pomodorough-iOS-Simulator-unsigned-non-notarized-${GITHUB_REF_NAME}.zip"
+          ios_simulator_zip="$RELEASE_DIR/Pomodorough-iOS-Simulator-unsigned-non-notarized-${GITHUB_REF_NAME}.zip"
+          ios_device_ipa="$RELEASE_DIR/Pomodorough-iOS-unsigned-${GITHUB_REF_NAME}.ipa"
           macos_zip="$RELEASE_DIR/Pomodorough-macOS-unsigned-non-notarized-${GITHUB_REF_NAME}.zip"
 
-          test -d "$ios_app"
+          test -d "$ios_simulator_app"
+          test -d "$ios_device_app"
           test -d "$macos_app"
-          mkdir -p "$(dirname "$ios_staged_app")" "$(dirname "$macos_staged_app")"
-          ditto "$ios_app" "$ios_staged_app"
+          mkdir -p "$(dirname "$ios_simulator_staged_app")" \
+            "$(dirname "$ios_device_staged_app")" \
+            "$(dirname "$macos_staged_app")"
+          ditto "$ios_simulator_app" "$ios_simulator_staged_app"
+          ditto "$ios_device_app" "$ios_device_staged_app"
           ditto "$macos_app" "$macos_staged_app"
-          codesign --remove-signature "$ios_staged_app"
+          codesign --remove-signature "$ios_simulator_staged_app"
+          if codesign -dv "$ios_device_staged_app" >/dev/null 2>&1; then
+            codesign --remove-signature "$ios_device_staged_app"
+          fi
           codesign --remove-signature "$macos_staged_app"
 
-          if codesign -dv "$ios_staged_app" >/dev/null 2>&1; then
-            printf 'iOS artifact is still signed\n' >&2
+          if codesign -dv "$ios_simulator_staged_app" >/dev/null 2>&1; then
+            printf 'iOS simulator artifact is still signed\n' >&2
+            exit 1
+          fi
+          if codesign -dv "$ios_device_staged_app" >/dev/null 2>&1; then
+            printf 'iOS device artifact is still signed\n' >&2
             exit 1
           fi
           if codesign -dv "$macos_staged_app" >/dev/null 2>&1; then
@@ -110,11 +136,15 @@ jobs:
           fi
 
           mkdir -p "$RELEASE_DIR"
-          ditto -c -k --sequesterRsrc --keepParent "$ios_staged_app" "$ios_zip"
+          ditto -c -k --sequesterRsrc --keepParent "$ios_simulator_staged_app" "$ios_simulator_zip"
+          (
+            cd "$ios_device_staging"
+            ditto -c -k --sequesterRsrc --keepParent Payload "$ios_device_ipa"
+          )
           ditto -c -k --sequesterRsrc --keepParent "$macos_staged_app" "$macos_zip"
 
           cd "$RELEASE_DIR"
-          shasum -a 256 ./*.zip > SHA256SUMS.txt
+          shasum -a 256 ./*.ipa ./*.zip > SHA256SUMS.txt
 
       - name: Create GitHub Release
         env:
@@ -128,9 +158,10 @@ jobs:
             'Unsigned, non-notarized developer artifacts built without signing credentials.' \
             '' \
             '- Linker-generated ad-hoc signatures were removed before packaging.' \
-            '- iOS artifact: unsigned simulator build; it cannot be installed on a physical device.' \
+            '- iOS simulator ZIP: unsigned simulator build; it cannot be installed on a physical device.' \
+            '- iOS IPA: unsigned device build; it must be signed and provisioned before installation.' \
             '- macOS artifact: unsigned and non-notarized; Gatekeeper may block normal launch.' \
-            '- SHA256SUMS.txt contains SHA-256 checksums for both archives.' \
+            '- SHA256SUMS.txt contains SHA-256 checksums for all artifacts.' \
             > "$notes_file"
 
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then

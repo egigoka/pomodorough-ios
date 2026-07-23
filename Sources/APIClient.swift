@@ -237,7 +237,8 @@ private extension BootstrapResponse {
     func validatingEmptyAcknowledgements() throws -> Self {
         guard acknowledgements.isEmpty,
               taskAcknowledgements.isEmpty,
-              durationAcknowledgements.isEmpty else {
+              durationAcknowledgements.isEmpty,
+              autoStartAcknowledgements.isEmpty else {
             throw AppError.invalidResponse
         }
         return self

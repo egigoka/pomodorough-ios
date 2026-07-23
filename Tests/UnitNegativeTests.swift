@@ -78,6 +78,46 @@ struct UnitNegativeTests {
         }
     }
 
+    @Test func persistedPendingAutoStartSanitizesMalformedForeignAndDuplicateRows() throws {
+        var state = PersistedTimerState.fresh()
+        state.deviceId = "device-local"
+        state.autoStartBreaks = true
+        let valid = TestFixtures.autoStartOperation(
+            deviceID: state.deviceId,
+            enabled: false,
+            wallMs: 1
+        )
+        let zeroWall = TestFixtures.autoStartOperation(
+            deviceID: state.deviceId,
+            enabled: true,
+            wallMs: 0
+        )
+        let negativeWall = TestFixtures.autoStartOperation(
+            deviceID: state.deviceId,
+            enabled: true,
+            wallMs: -1
+        )
+        let foreign = TestFixtures.autoStartOperation(
+            deviceID: "device-foreign",
+            enabled: true,
+            wallMs: 2
+        )
+        state.pendingAutoStartOperations = [valid, zeroWall, negativeWall, foreign, valid]
+        let data = try JSONEncoder.api.encode(state)
+        var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        var operations = try #require(object["pendingAutoStartOperations"] as? [[String: Any]])
+        operations.append(["enabled": true, "hlcWallMs": 3])
+        object["pendingAutoStartOperations"] = operations
+        let malformedData = try JSONSerialization.data(withJSONObject: object)
+
+        let decoded = try JSONDecoder.api.decode(PersistedTimerState.self, from: malformedData)
+
+        #expect(!zeroWall.isValid)
+        #expect(!negativeWall.isValid)
+        #expect(decoded.pendingAutoStartOperations == [valid])
+        #expect(decoded.autoStartBreaks)
+    }
+
     @Test func syncResponseRequiresFixedDurationFields() {
         let json = Data(
             #"{"acknowledgements":[],"revision":0,"canonicalTimer":null,"history":[],"serverTime":"2026-07-21T08:00:00.000Z","serverHlcWallMs":1784620800000,"serverHlcCounter":0}"#.utf8
@@ -93,7 +133,9 @@ struct UnitNegativeTests {
             "acknowledgements",
             "taskAcknowledgements",
             "durationAcknowledgements",
+            "autoStartAcknowledgements",
             "durationsMs",
+            "autoStartBreaks",
             "revision",
             "canonicalTimer",
             "history",
@@ -105,7 +147,7 @@ struct UnitNegativeTests {
     )
     func bootstrapResponseRequiresEveryCanonicalField(_ missingKey: String) throws {
         let complete = Data(
-            #"{"acknowledgements":[],"taskAcknowledgements":[],"durationAcknowledgements":[],"durationsMs":{"focus":1500000,"short_break":300000,"long_break":900000},"revision":1,"canonicalTimer":null,"history":[],"tasks":[],"serverTime":"2026-07-21T08:00:00.000Z","serverHlcWallMs":1784620800000,"serverHlcCounter":0}"#.utf8
+            #"{"acknowledgements":[],"taskAcknowledgements":[],"durationAcknowledgements":[],"autoStartAcknowledgements":[],"durationsMs":{"focus":1500000,"short_break":300000,"long_break":900000},"autoStartBreaks":false,"revision":1,"canonicalTimer":null,"history":[],"tasks":[],"serverTime":"2026-07-21T08:00:00.000Z","serverHlcWallMs":1784620800000,"serverHlcCounter":0}"#.utf8
         )
         var object = try #require(JSONSerialization.jsonObject(with: complete) as? [String: Any])
         object.removeValue(forKey: missingKey)
@@ -118,7 +160,7 @@ struct UnitNegativeTests {
 
     @Test func bootstrapResponseRejectsMalformedCanonicalTimer() throws {
         let json = Data(
-            #"{"acknowledgements":[],"taskAcknowledgements":[],"durationAcknowledgements":[],"durationsMs":{"focus":1500000,"short_break":300000,"long_break":900000},"revision":1,"canonicalTimer":"invalid","history":[],"tasks":[],"serverTime":"2026-07-21T08:00:00.000Z","serverHlcWallMs":1784620800000,"serverHlcCounter":0}"#.utf8
+            #"{"acknowledgements":[],"taskAcknowledgements":[],"durationAcknowledgements":[],"autoStartAcknowledgements":[],"durationsMs":{"focus":1500000,"short_break":300000,"long_break":900000},"autoStartBreaks":false,"revision":1,"canonicalTimer":"invalid","history":[],"tasks":[],"serverTime":"2026-07-21T08:00:00.000Z","serverHlcWallMs":1784620800000,"serverHlcCounter":0}"#.utf8
         )
 
         #expect(throws: DecodingError.self) {
@@ -151,6 +193,67 @@ struct UnitNegativeTests {
             )
         }
         #expect(state == original)
+    }
+
+    @Test func autoStartSyncRejectsDuplicateAcknowledgementsWithoutMutatingState() {
+        var state = PersistedTimerState.fresh()
+        let operation = TestFixtures.autoStartOperation(
+            deviceID: state.deviceId,
+            enabled: true,
+            wallMs: 1
+        )
+        let acknowledgement = AutoStartAcknowledgement(
+            operationId: operation.id,
+            outcome: .applied,
+            reason: ""
+        )
+        state.pendingAutoStartOperations = [operation]
+        let original = state
+
+        #expect(throws: AppError.self) {
+            try state.applyAutoStartSync(
+                canonicalValue: true,
+                sentOperations: [operation],
+                acknowledgements: [acknowledgement, acknowledgement]
+            )
+        }
+        #expect(state == original)
+    }
+
+    @Test func autoStartSyncRejectsForeignLocalOperationWithoutMutatingState() {
+        let operation = TestFixtures.autoStartOperation(
+            deviceID: "device-foreign",
+            enabled: true,
+            wallMs: 1
+        )
+        var state = PersistedTimerState.fresh()
+        state.deviceId = "device-local"
+        state.pendingAutoStartOperations = [operation]
+        let original = state
+
+        #expect(throws: AppError.self) {
+            try state.applyAutoStartSync(
+                canonicalValue: true,
+                sentOperations: [operation],
+                acknowledgements: [AutoStartAcknowledgement(
+                    operationId: operation.id,
+                    outcome: .applied,
+                    reason: ""
+                )]
+            )
+        }
+        #expect(state == original)
+    }
+
+    @Test func syncResponseRejectsUnknownAutoStartAcknowledgementOutcome() {
+        let operationID = UUID().uuidString.lowercased()
+        let json = Data(
+            #"{"acknowledgements":[],"durationAcknowledgements":[],"autoStartAcknowledgements":[{"operationId":"\#(operationID)","outcome":"unknown","reason":""}],"durationsMs":{"focus":1500000,"short_break":300000,"long_break":900000},"autoStartBreaks":true,"revision":0,"canonicalTimer":null,"history":[],"serverTime":"2026-07-21T08:00:00.000Z","serverHlcWallMs":1784620800000,"serverHlcCounter":0}"#.utf8
+        )
+
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder.api.decode(SyncResponse.self, from: json)
+        }
     }
 
     @Test func durationSyncRejectsOutOfBoundsCanonicalValuesWithoutMutatingState() {

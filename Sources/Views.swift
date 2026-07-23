@@ -1,3 +1,6 @@
+#if os(macOS)
+import AppKit
+#endif
 import GoogleSignInSwift
 import SwiftUI
 
@@ -15,7 +18,11 @@ struct RootView: View {
                 destination
             }
         }
+#if os(macOS)
+        .frame(minWidth: 516, minHeight: 420)
+#else
         .frame(minWidth: 320, minHeight: 420)
+#endif
         .tint(PomodoroughTheme.signal)
         .alert("Pomodorough", isPresented: errorPresented) {
             Button("OK") { model.errorMessage = nil }
@@ -394,71 +401,139 @@ private struct PermissionIntroductionCard: View {
 }
 #endif
 
+private enum MainTab: Hashable {
+    case timer
+    case tasks
+    case pattern
+    case history
+}
+
 private struct MainContainer: View {
     let model: AppModel
+    @State private var selectedTab = MainTab.timer
+#if os(macOS)
+    @State private var showsSettings = false
+    @State private var showsAccount = false
+#endif
 
     var body: some View {
         Group {
 #if os(iOS)
         if #available(iOS 18, *) {
-            ModernTabs(model: model)
+            ModernTabs(model: model, selection: $selectedTab)
         } else {
-            LegacyTabs(model: model)
+            LegacyTabs(model: model, selection: $selectedTab)
         }
 #else
-        TabView {
+        TabView(selection: $selectedTab) {
             TimerScreen(model: model)
                 .tabItem { Label("Timer", systemImage: "timer") }
+                .tag(MainTab.timer)
             TasksScreen(model: model)
                 .tabItem { Label("Tasks", systemImage: "checklist") }
-            ServicePatternScreen(model: model)
-                .tabItem { Label("Pattern", systemImage: "slider.horizontal.3") }
+                .tag(MainTab.tasks)
             HistoryScreen(model: model)
                 .tabItem { Label("Arrivals", systemImage: "clock.arrow.circlepath") }
+                .tag(MainTab.history)
         }
+        .animation(.default, value: selectedTab)
+        .inspector(isPresented: $showsSettings) {
+            ServicePatternScreen(model: model)
+                .inspectorColumnWidth(min: 320, ideal: 380, max: 520)
+        }
+        .frame(minWidth: showsSettings ? 896 : 516)
+        .toolbar {
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button("Settings", systemImage: "slider.horizontal.3") {
+                    toggleSettings()
+                }
+                AccountSyncToolbarButton(model: model, showsAccount: $showsAccount)
+            }
+        }
+        .sheet(isPresented: $showsAccount) { AccountView(model: model) }
 #endif
         }
         .disabled(model.isHistoryResolutionBlocking)
     }
+
+#if os(macOS)
+    private func toggleSettings() {
+        let willShowSettings = !showsSettings
+        guard willShowSettings,
+              let window = NSApp.currentEvent?.window
+                ?? NSApp.keyWindow
+                ?? NSApp.mainWindow
+                ?? NSApp.windows.first(where: \.isVisible),
+              window.frame.width < 896 else {
+            withAnimation(.default) {
+                showsSettings = willShowSettings
+            }
+            return
+        }
+
+        var targetFrame = window.frame
+        targetFrame.size.width = 896
+        if let visibleFrame = window.screen?.visibleFrame,
+           targetFrame.maxX > visibleFrame.maxX {
+            targetFrame.origin.x = max(visibleFrame.minX, visibleFrame.maxX - targetFrame.width)
+        }
+
+        let duration = window.animationResizeTime(targetFrame)
+        withAnimation(.easeInOut(duration: duration)) {
+            showsSettings = true
+        }
+        DispatchQueue.main.async {
+            window.setFrame(targetFrame, display: true, animate: true)
+        }
+    }
+#endif
 }
 
 #if os(iOS)
 @available(iOS 18, *)
 private struct ModernTabs: View {
     let model: AppModel
+    @Binding var selection: MainTab
 
     var body: some View {
-        TabView {
-            Tab("Timer", systemImage: "timer") {
+        TabView(selection: $selection) {
+            Tab("Timer", systemImage: "timer", value: MainTab.timer) {
                 NavigationStack { TimerScreen(model: model) }
             }
-            Tab("Tasks", systemImage: "checklist") {
+            Tab("Tasks", systemImage: "checklist", value: MainTab.tasks) {
                 NavigationStack { TasksScreen(model: model) }
             }
-            Tab("Pattern", systemImage: "slider.horizontal.3") {
+            Tab("Pattern", systemImage: "slider.horizontal.3", value: MainTab.pattern) {
                 NavigationStack { ServicePatternScreen(model: model) }
             }
-            Tab("Arrivals", systemImage: "clock.arrow.trianglehead.counterclockwise.rotate.90") {
+            Tab("Arrivals", systemImage: "clock.arrow.trianglehead.counterclockwise.rotate.90", value: MainTab.history) {
                 NavigationStack { HistoryScreen(model: model) }
             }
         }
+        .animation(.default, value: selection)
     }
 }
 
 private struct LegacyTabs: View {
     let model: AppModel
+    @Binding var selection: MainTab
 
     var body: some View {
-        TabView {
+        TabView(selection: $selection) {
             NavigationStack { TimerScreen(model: model) }
                 .tabItem { Label("Timer", systemImage: "timer") }
+                .tag(MainTab.timer)
             NavigationStack { TasksScreen(model: model) }
                 .tabItem { Label("Tasks", systemImage: "checklist") }
+                .tag(MainTab.tasks)
             NavigationStack { ServicePatternScreen(model: model) }
                 .tabItem { Label("Pattern", systemImage: "slider.horizontal.3") }
+                .tag(MainTab.pattern)
             NavigationStack { HistoryScreen(model: model) }
                 .tabItem { Label("Arrivals", systemImage: "clock.arrow.circlepath") }
+                .tag(MainTab.history)
         }
+        .animation(.default, value: selection)
     }
 }
 #endif
@@ -471,7 +546,7 @@ private struct TimerScreen: View {
         GeometryReader { geometry in
             let layout = TimerLayout(size: geometry.size)
 
-            Group {
+            ZStack {
                 if layout == .landscape {
                     VStack(spacing: 10) {
                         if let conflict = model.conflictMessage {
@@ -480,7 +555,8 @@ private struct TimerScreen: View {
                         TimerMachineCard(model: model, layout: layout)
                     }
                     .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
+                    .padding(.top, 8)
+                    .padding(.bottom, 16)
                     .timerChromeHidden(true)
                 } else {
                     ScrollView {
@@ -491,17 +567,20 @@ private struct TimerScreen: View {
                             TimerMachineCard(model: model, layout: layout)
                         }
                         .padding()
+                        .padding(.bottom, 16)
                         .frame(maxWidth: 760)
                         .frame(maxWidth: .infinity)
                     }
                     .timerChromeHidden(false)
                 }
             }
+            .animation(.default, value: layout)
         }
         .background(TimerBackdrop())
         .navigationTitle("Pomodorough")
         .inlineNavigationTitleIfSupported()
         .refreshable { await model.sync(force: true) }
+#if os(iOS)
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 SyncToolbarStatus(model: model)
@@ -511,10 +590,11 @@ private struct TimerScreen: View {
             }
         }
         .sheet(isPresented: $showsAccount) { AccountView(model: model) }
+#endif
     }
 }
 
-private enum TimerLayout {
+private enum TimerLayout: Equatable {
     case portrait
     case landscape
 
@@ -552,6 +632,52 @@ private struct SyncToolbarStatus: View {
         .disabled(!model.isSignedIn || model.isSyncing || model.isHistoryResolutionBlocking)
     }
 }
+
+#if os(macOS)
+private struct AccountSyncToolbarButton: View {
+    let model: AppModel
+    @Binding var showsAccount: Bool
+
+    var body: some View {
+        Button {
+            showsAccount = true
+        } label: {
+            if !model.isSignedIn {
+                Text("Sign in")
+            } else if model.isSyncing {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Image(systemName: statusSymbol)
+                    .foregroundStyle(statusColor)
+            }
+        }
+        .help(model.isSignedIn ? model.syncLabel : "Sign in")
+        .accessibilityLabel(model.isSignedIn ? "Account, \(model.syncLabel)" : "Sign in")
+    }
+
+    private var statusSymbol: String {
+        if model.conflictMessage != nil || model.isHistoryResolutionBlocking {
+            return "exclamationmark.triangle.fill"
+        }
+        if model.isOffline {
+            return "wifi.slash"
+        }
+        if model.pendingChangeCount > 0 {
+            return "clock.arrow.circlepath"
+        }
+        return "checkmark.circle.fill"
+    }
+
+    private var statusColor: Color {
+        if model.conflictMessage != nil || model.isHistoryResolutionBlocking
+            || model.isOffline || model.pendingChangeCount > 0 {
+            return PomodoroughTheme.signal
+        }
+        return PomodoroughTheme.platform
+    }
+}
+#endif
 
 private struct ServicePatternScreen: View {
     @Bindable var model: AppModel
@@ -621,6 +747,7 @@ private struct ServicePatternCard: View {
         .overlay {
             RoundedRectangle(cornerRadius: 22).stroke(PomodoroughTheme.track, lineWidth: 2)
         }
+        .environment(\.colorScheme, .light)
     }
 }
 
@@ -710,17 +837,27 @@ private struct TimerMachineCard: View {
             .padding(.bottom, 8)
             .overlay(alignment: .bottom) { Divider().overlay(.white.opacity(0.35)) }
 
-            if let timer = model.activeTimer {
-                TimerDial(timer: timer, model: model, layout: layout)
+            #if os(macOS)
+            if layout == .landscape {
+                HStack(spacing: 18) {
+                    dial(layout: .portrait)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    VStack(spacing: 14) {
+                        TimerTaskPicker(model: model, layout: layout)
+                        TimerControls(model: model, layout: layout)
+                    }
+                    .frame(minWidth: 220, idealWidth: 260, maxWidth: 320)
+                }
             } else {
-                IdleTimerDial(
-                    phase: model.selectedPhase,
-                    minutes: model.durationMinutes(for: model.selectedPhase),
-                    layout: layout
-                )
+                dial(layout: layout)
+                TimerTaskPicker(model: model, layout: layout)
+                TimerControls(model: model, layout: layout)
             }
+            #else
+            dial(layout: layout)
             TimerTaskPicker(model: model, layout: layout)
             TimerControls(model: model, layout: layout)
+            #endif
         }
         .padding(layout == .landscape ? 14 : 18)
         .frame(maxWidth: .infinity, maxHeight: layout == .landscape ? .infinity : nil)
@@ -733,6 +870,21 @@ private struct TimerMachineCard: View {
         .overlay {
             RoundedRectangle(cornerRadius: 24)
                 .stroke(.white.opacity(0.18), lineWidth: 1)
+        }
+    }
+
+    @ViewBuilder
+    private func dial(layout: TimerLayout) -> some View {
+        Group {
+            if let timer = model.activeTimer {
+                TimerDial(timer: timer, model: model, layout: layout)
+            } else {
+                IdleTimerDial(
+                    phase: model.selectedPhase,
+                    minutes: model.durationMinutes(for: model.selectedPhase),
+                    layout: layout
+                )
+            }
         }
     }
 }
@@ -994,10 +1146,15 @@ private struct TimerControls: View {
             VStack(spacing: 14) {
                 primaryButton(glass: glass)
                 if model.isTimerActive {
+                    #if os(macOS)
+                    controlButton("Finish", symbol: "checkmark", glassID: .finish, prominent: false, glass: glass) { model.finish() }
+                    controlButton("Cancel", symbol: "xmark", glassID: .cancel, prominent: false, glass: glass) { model.cancel() }
+                    #else
                     HStack(spacing: 14) {
                         controlButton("Finish", symbol: "checkmark", glassID: .finish, prominent: false, glass: glass) { model.finish() }
                         controlButton("Cancel", symbol: "xmark", glassID: .cancel, prominent: false, glass: glass) { model.cancel() }
                     }
+                    #endif
                 }
                 if hasClearableTimer {
                     controlButton("Clear timer", symbol: "trash", glassID: .clear, prominent: false, glass: glass, action: model.clear)
@@ -1038,7 +1195,7 @@ private struct TimerControls: View {
 #if os(iOS)
         layout == .landscape
 #else
-        true
+        layout != .landscape
 #endif
     }
 
@@ -1506,6 +1663,9 @@ private struct AccountView: View {
                 if model.isHistoryResolutionBlocking { dismiss() }
             }
         }
+#if os(macOS)
+        .frame(minWidth: 480, minHeight: 420)
+#endif
     }
 }
 

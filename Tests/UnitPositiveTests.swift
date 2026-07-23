@@ -103,7 +103,8 @@ struct UnitPositiveTests {
             lastRevision: 3,
             commands: [],
             taskOperations: [],
-            durationOperations: [operation]
+            durationOperations: [operation],
+            autoStartOperations: []
         )
 
         let data = try JSONEncoder.api.encode(request)
@@ -121,7 +122,7 @@ struct UnitPositiveTests {
 
     @Test func syncResponseDecodesFixedDurationContract() throws {
         let json = Data(
-            #"{"acknowledgements":[],"durationAcknowledgements":[{"operationId":"duration-operation-test","outcome":"applied","reason":""}],"durationsMs":{"focus":1500000,"short_break":300000,"long_break":900000},"revision":0,"canonicalTimer":null,"history":[],"serverTime":"2026-07-21T08:00:00.000Z","serverHlcWallMs":1784620800000,"serverHlcCounter":7}"#.utf8
+            #"{"acknowledgements":[],"durationAcknowledgements":[{"operationId":"duration-operation-test","outcome":"applied","reason":""}],"autoStartAcknowledgements":[],"durationsMs":{"focus":1500000,"short_break":300000,"long_break":900000},"autoStartBreaks":false,"revision":0,"canonicalTimer":null,"history":[],"serverTime":"2026-07-21T08:00:00.000Z","serverHlcWallMs":1784620800000,"serverHlcCounter":7}"#.utf8
         )
 
         let response = try JSONDecoder.api.decode(SyncResponse.self, from: json)
@@ -136,10 +137,121 @@ struct UnitPositiveTests {
         #expect(response.serverHlcCounter == 7)
     }
 
+    @Test func syncRequestEncodesExactAutoStartOperationContract() throws {
+        let operationID = try #require(UUID(uuidString: "2ddbd077-3814-4a1f-bbd7-41c4ef26432a"))
+        let operation = TestFixtures.autoStartOperation(
+            id: operationID,
+            deviceID: "device-wire",
+            enabled: true,
+            wallMs: 1_234,
+            counter: 2
+        )
+        let request = SyncRequest(
+            deviceId: "device-wire",
+            lastRevision: 4,
+            commands: [],
+            taskOperations: [],
+            durationOperations: [],
+            autoStartOperations: [operation]
+        )
+
+        let data = try JSONEncoder.api.encode(request)
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let operations = try #require(json["autoStartOperations"] as? [[String: Any]])
+        let encoded = try #require(operations.first)
+
+        #expect(Set(encoded.keys) == ["id", "deviceId", "enabled", "occurredAt", "hlcWallMs", "hlcCounter"])
+        #expect(UUID(uuidString: encoded["id"] as? String ?? "") == operationID)
+        #expect(encoded["deviceId"] as? String == "device-wire")
+        #expect(encoded["enabled"] as? Bool == true)
+        #expect(encoded["hlcWallMs"] as? Int == 1_234)
+        #expect(encoded["hlcCounter"] as? Int == 2)
+        #expect(encoded["occurredAt"] as? String == "1970-01-01T00:16:40.000Z")
+    }
+
+    @Test func bootstrapAutoStartPresenceDistinguishesLegacyOmissionFromExplicitDefault() throws {
+        func encoded(_ operations: [AutoStartOperation]?) throws -> [String: Any] {
+            let request = BootstrapResolveRequest(
+                requestId: "bootstrap-presence",
+                deviceId: "device-presence",
+                expectedRevision: 1,
+                strategy: .replaceRemote,
+                commands: [],
+                taskOperations: [],
+                durationOperations: [],
+                autoStartOperations: operations
+            )
+            return try #require(JSONSerialization.jsonObject(with: JSONEncoder.api.encode(request)) as? [String: Any])
+        }
+
+        #expect(try !encoded(nil).keys.contains("autoStartOperations"))
+        #expect(try (encoded([])["autoStartOperations"] as? [Any])?.isEmpty == true)
+    }
+
+    @Test func autoStartReducerUsesHLCDeviceAndOperationOrdering() throws {
+        let firstID = try #require(UUID(uuidString: "00000000-0000-4000-8000-000000000001"))
+        let secondID = try #require(UUID(uuidString: "00000000-0000-4000-8000-000000000002"))
+        let first = TestFixtures.autoStartOperation(
+            id: firstID,
+            deviceID: "device-a",
+            enabled: false,
+            wallMs: 10,
+            counter: 2
+        )
+        let second = TestFixtures.autoStartOperation(
+            id: secondID,
+            deviceID: "device-b",
+            enabled: true,
+            wallMs: 10,
+            counter: 2
+        )
+
+        #expect(AutoStartReducer.applying([second, first], to: false))
+    }
+
+    @Test func autoStartReducerAcceptsValidOperationFromRemoteDevice() {
+        let remote = TestFixtures.autoStartOperation(
+            deviceID: "device-remote",
+            enabled: true,
+            wallMs: 10
+        )
+
+        #expect(AutoStartReducer.applying([remote], to: false))
+    }
+
+    @Test func autoStartSyncRebasesNewerPendingToggleOntoCanonicalResponse() throws {
+        var state = PersistedTimerState.fresh()
+        let sent = TestFixtures.autoStartOperation(
+            deviceID: state.deviceId,
+            enabled: true,
+            wallMs: 1
+        )
+        let newer = TestFixtures.autoStartOperation(
+            deviceID: state.deviceId,
+            enabled: false,
+            wallMs: 2
+        )
+        state.pendingAutoStartOperations = [sent, newer]
+
+        try state.applyAutoStartSync(
+            canonicalValue: true,
+            sentOperations: [sent],
+            acknowledgements: [AutoStartAcknowledgement(
+                operationId: sent.id,
+                outcome: .applied,
+                reason: ""
+            )]
+        )
+
+        #expect(state.autoStartBreaks)
+        #expect(state.pendingAutoStartOperations == [newer])
+        #expect(!AutoStartReducer.applying(state.pendingAutoStartOperations, to: state.autoStartBreaks))
+    }
+
     @Test func durationSyncReplaysNewerPendingEditAfterInFlightAcknowledgement() throws {
         var state = PersistedTimerState.fresh()
         state.settings.selectedPhase = .longBreak
-        state.settings.autoStartBreaks = true
+        state.autoStartBreaks = true
         let sent = TestFixtures.durationOperation(
             id: "duration-operation-sent",
             phase: .focus,
@@ -174,7 +286,7 @@ struct UnitPositiveTests {
         #expect(state.settings.durationMs(for: .shortBreak) == 8 * 60_000)
         #expect(state.settings.durationMs(for: .longBreak) == 20 * 60_000)
         #expect(state.settings.selectedPhase == .longBreak)
-        #expect(state.settings.autoStartBreaks)
+        #expect(state.autoStartBreaks)
     }
 
     @Test func legacyDurationBootstrapUsesSentinelWithoutAdvancingClock() {
@@ -254,7 +366,7 @@ struct UnitPositiveTests {
         let deviceID = state.deviceId
         state.settings.focusMinutes = 42
         state.settings.selectedPhase = .longBreak
-        state.settings.autoStartBreaks = true
+        state.autoStartBreaks = true
         state.cachedUser = User(id: String(repeating: "a", count: 32), email: "a@example.com", name: "A", avatarUrl: "")
         state.pendingCommands = [TestFixtures.command(.start, sequence: 1, elapsed: 0)]
         state.pendingTaskOperations = [TaskOperation(
@@ -280,11 +392,12 @@ struct UnitPositiveTests {
         #expect(state.deviceId == deviceID)
         #expect(state.settings.durationsMs == .defaults)
         #expect(state.settings.selectedPhase == .longBreak)
-        #expect(state.settings.autoStartBreaks)
+        #expect(!state.autoStartBreaks)
         #expect(state.cachedUser == newUser)
         #expect(state.pendingCommands.isEmpty)
         #expect(state.pendingTaskOperations.isEmpty)
         #expect(state.pendingDurationOperations.isEmpty)
+        #expect(state.pendingAutoStartOperations.isEmpty)
         #expect(state.canonicalTimer == nil)
     }
 
